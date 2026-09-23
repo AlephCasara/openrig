@@ -2,14 +2,14 @@
 
 A harness wraps a model. A rig wraps your harnesses. Define your agent team in YAML, boot it with one command. Claude Code and Codex in the same rig, managed as one system.
 
-OpenRig turns AI coding agents from a pile of terminal sessions into a persistent, organized team. Start with a repository and one useful change, then keep the team's work and context at the same addresses.
+OpenRig turns AI coding agents from a pile of terminal sessions into a persistent, organized team. Talk to a lead agent about the outcome you want; it can coordinate specialists across teams and bring you results and decisions that need your attention. Start with a repository and one useful change, then keep the team's work and context at the same addresses.
 
 The terminal UI is the shared dashboard; the CLI drives work and coordination. The older web UI is in maintenance mode with best-effort support.
 
 ```bash
 npm install -g @openrig/cli
 rig setup --dry-run
-cd <your-repository>
+cd /path/to/your/repository
 rig up first-project --cwd .
 rig tui --shared
 ```
@@ -29,17 +29,24 @@ Check readiness, then give the owner a bounded outcome from your repository:
 
 ```bash
 rig ps --nodes --rig first-project
-rig send dev-owner@first-project 'Implement <one useful change>. Keep it local, verify the behavior, ask dev-check to check the exact candidate, and record the result and how I can try it.'
-rig queue list --rig first-project --limit 1000
+rig send dev-owner@first-project 'Implement <one useful change>. Track the task in the queue and return its ID. Keep it local, verify the behavior, ask dev-check@first-project to check the exact candidate, and record the result and how I can try it.'
+rig queue list --destination dev-owner@first-project --limit 1000
 ```
 
+Sending a message does not itself create a queue item; the owner records the task.
 Read the final artifact and the review of its exact candidate. Return to the
 same owner for the next change. To leave the shared dashboard without stopping
 it, press Ctrl-b then d; `rig tui --shared` returns to that view. Plain `rig tui`
 opens an independent view. Closing a viewing terminal does not mean you should
 relaunch the team.
 
-## Upgrading an existing instance to 0.5.9
+## Upgrading an existing instance
+
+For an existing installation, follow the [upgrade procedure](skills/_canonical/core/openrig-upgrade/SKILL.md) and the [0.5.14 release notes](docs/releases/v0.5.14.md). Preserve live seats during the upgrade; `rig down` is not an upgrade step.
+
+### Crossing the 0.5.9 layout boundary
+
+The migration below still applies when upgrading from a pre-0.5.9 instance.
 
 0.5.9 makes `$OPENRIG_HOME/context` the addressable context library, writes
 Claude telemetry to `state/context-usage` (and provider telemetry to
@@ -86,9 +93,9 @@ OpenRig is a multi-agent harness — it manages the system that coding agents fo
 
 - **Define** topologies in YAML (RigSpec) with pods, edges, and continuity policies
 - **Boot** everything with `rig up` — tmux sessions, harnesses, startup files, readiness checks
-- **See** the topology in a live graph with explorer, node detail, and system log
+- **See** rigs, pods, and seats in the TUI topology table and graph; inspect projects, specs, feeds, and instance health
 - **Discover** existing Claude Code and Codex sessions in tmux and adopt them into a managed rig
-- **Snapshot** the full topology on `rig down`, restore by name with `rig up <name>`
+- **Snapshot** the topology with `rig down --snapshot`, restore by name with `rig up <name>`
 - **Communicate** across agents with `rig send`, `rig broadcast`, and `rig chatroom`
 - **Evolve** running topologies with `rig expand`, `rig shrink`, `rig launch`, `rig remove`
 
@@ -100,20 +107,20 @@ Use `first-project` for the focused first-use path. `product-team` is an optiona
 larger product-development example:
 
 ```bash
-rig specs preview product-team
+rig specs preview product-team --kind rig
 rig up product-team
 ```
 
-Use it when you want the week-one experience OpenRig is built around: an orchestrator HA pair, development work, review work, and enough moving pieces for the coordination layer to matter.
+Use it when you want a larger product squad: two orchestrators, implementation, QA, design, and two independent reviewers.
 
 For a smaller starter, use `conveyor`:
 
 ```bash
-rig specs preview conveyor
+rig specs preview conveyor --kind rig
 rig up conveyor
 ```
 
-`conveyor` is the smallest shippable software factory, one command. It keeps the footprint lower for single-plan users while still showing a real handoff path through intake, planning, build, and review.
+`conveyor` is a four-seat starter mixing Claude Code and Codex. It shows a handoff path through intake, planning, build, and review; `first-project` remains the smaller two-seat starting point.
 
 Also ships: `implementation-pair`, `adversarial-review`, `research-team`, and `secrets-manager` (HashiCorp Vault managed by a specialist agent).
 
@@ -125,10 +132,10 @@ rig specs ls
 
 ## How It Works
 
-OpenRig is a local daemon + CLI + MCP server + React UI, built on tmux.
+OpenRig is a local daemon + CLI + terminal UI + MCP server, built on tmux. The older React web UI remains in maintenance mode.
 
 ```
-CLI / UI / MCP
+CLI / TUI / MCP
       |
 Hono HTTP daemon
       |
@@ -137,16 +144,33 @@ Hono HTTP daemon
   SQLite + tmux + runtime adapters
 ```
 
-- **CLI**: 40+ commands designed for both humans and agents. Every mutating command ends with what happened, current state, and next action.
-- **UI**: Explorer sidebar, topology graph with pod grouping, node detail panel, system log, chatroom.
-- **MCP**: 17 tools so agents can manage their own topology (`rig_up`, `rig_ps`, `rig_send`, `rig_chatroom_send`, etc.)
-- **Runtimes**: Claude Code, Codex, and terminal nodes. Adapters for Pi and OpenCode in development.
+- **CLI**: Commands for both humans and agents to launch teams, inspect state, send messages, track owned work, and manage context.
+- **TUI**: Topology explorer, table and graph views, seat details, Specs, Projects, Terminals, Feed, and System. Navigate with the keyboard, mouse, or command bar.
+- **MCP**: Tools so agents can manage their own topology (`rig_up`, `rig_ps`, `rig_send`, `rig_chatroom_send`, etc.)
+- **Runtimes**: Native Claude Code and Codex sessions, terminal nodes, and a Pi adapter using an RPC runner inside a terminal pane.
+
+## Terminal UI and Workspaces
+
+The TUI shows the team's coordination state; herdr and cmux show the actual agent terminals alongside it. Use `rig tui commands` to list the TUI's command-bar navigation, or [try the interactive TUI tour](https://openrig.dev/tour/workspace).
+
+![OpenRig TUI topology graph showing seven agent seats grouped into product, development, and QA pods](assets/ui/screenshots/tui-topology.png)
+
+*Captured from the interactive TUI demo using fictional project data.*
+
+With herdr installed and connected, open the starter's terminals together:
+
+```bash
+rig terminal open first-project --provider herdr
+```
+
+For cmux, use `--provider cmux`. The underlying sessions remain accessible through tmux. See the [terminal workspace guide](docs/reference/getting-started.md#share-the-dashboard-and-return-to-it) for setup and returning to an existing view.
 
 ## Key Concepts
 
 - **RigSpec**: Declarative multi-agent harness definition in YAML. Pods, members, edges, continuity policies, culture file.
 - **AgentSpec**: Reusable agent blueprint with skills, guidance, hooks, profiles, and startup contracts.
-- **Pod**: Bounded context group. Agents in a pod share memory and can maintain each other's context.
+- **Seat**: A stable role and address in a rig, such as `dev-owner@first-project`. The conversation occupying it can change while its identity and authored context remain.
+- **Pod**: A group of related seats with shared guidance and context. Each agent still has its own context window.
 - **Discovery**: `rig discover` fingerprints existing tmux sessions. `rig adopt` brings them under management.
 - **Snapshot/Restore**: `rig down --snapshot` captures full state. `rig up <name>` restores from latest snapshot. Restore reports per-node outcomes (resumed, fresh, or failed).
 - **RigBundle**: Portable archive with vendored AgentSpecs and SHA-256 integrity. Share topologies across machines.
@@ -166,11 +190,11 @@ Requires Docker for service-backed rigs.
 
 ## Requirements
 
-- Node.js 20, 22, or 24 (even-numbered LTS releases; odd releases like 25 lack native addon prebuilds)
+- Node.js 20, 22, or 24 (the supported versions in this release)
 - tmux
 
 Optional:
-- cmux for `Open CMUX` node surface controls
+- herdr or cmux for terminal workspaces showing the agents together
 - Docker for service-backed rigs and managed apps
 
 ## Setup and Troubleshooting
@@ -194,7 +218,7 @@ Already-running adopted sessions may need restart before they pick up newly writ
 
 ## Comparison with Claude Managed Agents
 
-Anthropic shipped Claude Managed Agents — a cloud-hosted, Claude-only runtime at $0.08/session-hour. OpenRig is the local side: open source, cross-harness, runs on your machine, costs nothing.
+OpenRig is open source and self-hosted, with Claude Code and Codex in the same team. You operate it on your own infrastructure; the selected providers' model usage costs still apply.
 
 [Full comparison](https://openrig.dev/compare/claude-managed-agents)
 
