@@ -225,7 +225,7 @@ Commands sent to the agent's terminal after it's ready. Can install MCPs, run se
 | `send_text` delivery after ready | **Supported** | Reliable. Requires harness to be ready. |
 | Hook projection | **Experimental** | Files are copied but execution/integration varies by runtime. |
 | Runtime resource projection | **Supported for recognized fragments** | `claude_settings_fragment`, `claude_mcp_fragment`, and `codex_config_fragment` are applied to provider config. Unknown types are copied to runtime extension directories. |
-| Permission allowlisting | **Supported via harness config** | Core OpenRig boot adds the minimal Claude `Bash(rig:*)` baseline. Additional policy should be supplied through spec-selected runtime resource fragments or native Codex config profiles, not adapter hard-code. |
+| Permission configuration | **Native settings plus managed launch flags** | OpenRig launches Claude with `acceptEdits` and Codex with `workspace-write` unless an explicit supported selection changes them. It does not add a global Claude `Bash(rig:*)` allowance. Use [the first-user permission guide](getting-started.md#opt-in-permissive-operation) for opt-in and custom choices. |
 | MCP installation | **Experimental** | Claude Code: `/mcp` interactive command or `claude mcp add` from CLI. Can also be described in startup files for agent self-configuration. Reliability depends on runtime TUI state. |
 | System dependency installation | **Not deterministic** | Describe in startup files; agent handles via shell commands. |
 | Recurring tasks / wake timers | **Runtime-dependent** | Claude Code supports recurring tasks via the `/loop` command. Codex does not have a confirmed equivalent. Orchestrators should include `/loop` instructions in startup for Claude Code agents. |
@@ -246,7 +246,8 @@ This way, when deterministic support becomes fully reliable, the agent will boot
 OpenRig performs best-effort deterministic runtime configuration for managed sessions. Core bootstrap stays minimal; user/custom policy belongs in spec-selected runtime resources. These writes are intentionally invasive and should be disclosed plainly:
 
 - Claude global config: `~/.claude/settings.json`
-  Purpose: allow core `rig` commands without repeated Claude permission prompts.
+  OpenRig no longer writes a core `Bash(rig:*)` permission allowance here. Older
+  installations may retain one; existing user settings are not removed.
 - Claude global state: `~/.claude.json`
   Purpose: pre-trust managed workspaces and mark onboarding complete for fresh managed sessions.
 - Claude project-local config: `.claude/settings.local.json`
@@ -259,6 +260,11 @@ OpenRig performs best-effort deterministic runtime configuration for managed ses
 Two important caveats:
 - these writes are best-effort and should still be paired with startup guidance so the local agent can verify and repair them if needed
 - already-running adopted sessions may need restart before they pick up newly written config
+
+Permission mode and runtime resource projection are separate. A selected fragment
+can affect native configuration, but OpenRig's launch flags can override those
+values. Recording a config-surface `permission_policy` is not proof that its
+rules were translated or applied. See [permission precedence and limits](getting-started.md#custom-settings-and-precedence).
 
 ### Runtime Differences
 
@@ -274,7 +280,9 @@ Two important caveats:
 - Reads from `AGENTS.md` and `.agents/` directory
 - Recurring task support is limited — no confirmed equivalent of Claude Code's `/loop` command
 - MCP configuration mechanism differs from Claude Code
-- Approval mode controlled via launch flags (`-a`, `-s`, `--full-auto`)
+- Approval policy and sandbox access are separate controls. OpenRig's default
+  `-s workspace-write` selects the sandbox; it does not force `-a`. A member's
+  `codex_config_profile` selects native `-p`, distinct from the AgentSpec `profile`.
 - Can self-install dependencies from instructions but timer/recurring behavior is not reliably available
 
 When authoring startup content, note which instructions are runtime-specific. For example, an orchestrator that needs a monitoring loop should include instructions like: "If running Claude Code, use `/loop 3m` to periodically check rig health. If running Codex, check rig health at the start of each task cycle instead."
