@@ -1384,8 +1384,10 @@ edges: []
     const importStage = result.stages.find((s) => s.stage === "import_rig");
     expect(importStage).toBeDefined();
     expect(importStage!.status).toBe("blocked");
-    const detail = importStage!.detail as { code: string; attentionNodes: Array<{ logicalId: string; sessionName: string; evidence?: string }> };
+    const detail = importStage!.detail as { code: string; message: string; attentionNodes: Array<{ logicalId: string; sessionName: string; evidence?: string }> };
     expect(detail.code).toBe("attention_required");
+    expect(detail.message).toMatch(/inspect/i);
+    expect(detail.message).not.toMatch(/approve and resume|NOT failed/);
     expect(detail.attentionNodes.length).toBe(1);
     expect(detail.attentionNodes[0]!.logicalId).toBe("dev.qa");
     expect(detail.attentionNodes[0]!.sessionName).toBe("dev-qa@pod-mixed-rig");

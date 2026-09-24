@@ -120,6 +120,8 @@ describe("SeatLifecycleService.launchFresh", () => {
       sessionRegistry,
       eventBus,
       tmuxAdapter: tmux,
+      listProcesses: async () => [{ pid: 4242, ppid: 1, pgid: 4242, tpgid: 4242,
+        executableName: "codex", command: "/opt/native/codex -m model", startedAt: "Sat Jan  1 12:00:00 2000" }],
       nodeLauncher,
       startupOrchestrator,
       runtimeAdapters: { "claude-code": adapter, codex: { ...adapter, runtime: "codex" } },

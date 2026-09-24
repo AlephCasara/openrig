@@ -680,7 +680,7 @@ export class BootstrapOrchestrator {
 
     // OPR.0.3.2.CT (guard verdict qitem-20260518082933 BLOCKER 1):
     // attention_required nodes are recoverable but NOT done — the
-    // launch is partial and the operator needs the same approve→resume
+    // launch is partial and the operator needs the same inspection
     // surface the all-attention path already gets. Treating mixed
     // launched+attention as "completed" would hide the parked seat
     // behind a 201 success response. finalStatus is partial whenever
@@ -699,7 +699,7 @@ export class BootstrapOrchestrator {
           evidence: n.evidence,
           reason: n.error ?? "node awaiting attention",
         }));
-      const message = `${attentionNodes.length} node${attentionNodes.length === 1 ? "" : "s"} require attention before becoming interactive (rig parked, NOT failed; approve and resume to proceed).`;
+      const message = `${attentionNodes.length} node${attentionNodes.length === 1 ? " requires" : "s require"} attention before becoming interactive. Inspect the affected sessions and reasons before choosing recovery.`;
       stages.push({
         stage: "import_rig",
         status: "blocked",

@@ -554,7 +554,7 @@ describe("Codex runtime adapter", () => {
     expect(sendText).toHaveBeenCalledWith("r01-qa", expectedFreshLaunchCommand({ queueRoot: null }));
   });
 
-  it("launchHarness skips the non-mutating Codex update prompt before capturing a fresh thread id", async () => {
+  it("launchHarness skips the Codex update prompt with one control key before capturing a fresh thread id", async () => {
     const initialShell = [
       expectedFreshLaunchCommand(),
       "admin@host project %",
@@ -571,8 +571,9 @@ describe("Codex runtime adapter", () => {
       getPaneCommand: vi.fn()
         .mockResolvedValueOnce("zsh")
         .mockResolvedValue("codex"),
-      capturePaneContent: vi.fn()
+      capturePaneScreen: vi.fn()
         .mockResolvedValueOnce(initialShell)
+        .mockResolvedValueOnce(updatePrompt)
         .mockResolvedValueOnce(updatePrompt)
         .mockResolvedValue("OpenAI Codex (v0.120.0)\n› Ask Codex to do anything"),
       getPanePid: vi.fn(async () => 900),
@@ -581,8 +582,8 @@ describe("Codex runtime adapter", () => {
       tmux,
       fsOps: mockFs(),
       listProcesses: () => [
-        { pid: 900, ppid: 1, command: "-zsh" },
-        { pid: 901, ppid: 900, command: "codex" },
+        { pid: 900, ppid: 1, command: "-zsh", pgid: 900, tpgid: 901, executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000" },
+        { pid: 901, ppid: 900, command: "codex", pgid: 901, tpgid: 901, executableName: "codex", startedAt: "Sat Jan  1 12:00:00 2000" },
       ],
       readThreadIdByPid: (pid) => pid === 901 ? "019d45bc-117d-78a3-a4ad-6fb186e5a86d" : undefined,
       sleep: async () => {},
@@ -599,12 +600,11 @@ describe("Codex runtime adapter", () => {
     const sendText = tmux.sendText as ReturnType<typeof vi.fn>;
     expect(sendText.mock.calls).toEqual([
       ["r01-qa", expectedFreshLaunchCommand()],
-      ["r01-qa", "3"],
     ]);
     const sendKeys = tmux.sendKeys as ReturnType<typeof vi.fn>;
     expect(sendKeys.mock.calls).toEqual([
       ["r01-qa", ["Enter"]],
-      ["r01-qa", ["Enter"]],
+      ["r01-qa", ["3"]],
     ]);
   });
 
@@ -644,14 +644,19 @@ describe("Codex runtime adapter", () => {
       "Press enter to continue",
     ].join("\n");
     const tmux = mockTmux({
-      getPaneCommand: vi.fn(async () => "zsh"),
-      capturePaneContent: vi.fn()
+      getPaneCommand: vi.fn()
+        .mockResolvedValueOnce("zsh").mockResolvedValueOnce("zsh")
+        .mockResolvedValueOnce("zsh").mockResolvedValueOnce("zsh")
+        .mockResolvedValueOnce("zsh").mockResolvedValueOnce("zsh")
+        .mockResolvedValue("codex"),
+      capturePaneScreen: vi.fn()
         .mockResolvedValueOnce(initialShell)
         .mockResolvedValueOnce(initialShell)
         .mockResolvedValueOnce(initialShell)
         .mockResolvedValueOnce(initialShell)
         .mockResolvedValueOnce(initialShell)
         .mockResolvedValueOnce(initialShell)
+        .mockResolvedValueOnce(updatePrompt)
         .mockResolvedValueOnce(updatePrompt)
         .mockResolvedValue("OpenAI Codex (v0.120.0)\n› Ask Codex to do anything"),
       getPanePid: vi.fn()
@@ -662,8 +667,8 @@ describe("Codex runtime adapter", () => {
       tmux,
       fsOps: mockFs(),
       listProcesses: () => [
-        { pid: 900, ppid: 1, command: "-zsh" },
-        { pid: 901, ppid: 900, command: "codex" },
+        { pid: 900, ppid: 1, command: "-zsh", pgid: 900, tpgid: 901, executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000" },
+        { pid: 901, ppid: 900, command: "codex", pgid: 901, tpgid: 901, executableName: "codex", startedAt: "Sat Jan  1 12:00:00 2000" },
       ],
       readThreadIdByPid: (pid) => pid === 901 ? "019d45bc-117d-78a3-a4ad-6fb186e5a86d" : undefined,
       sleep: async () => {},
@@ -680,8 +685,8 @@ describe("Codex runtime adapter", () => {
     const sendText = tmux.sendText as ReturnType<typeof vi.fn>;
     expect(sendText.mock.calls).toEqual([
       ["r01-qa", expectedFreshLaunchCommand()],
-      ["r01-qa", "3"],
     ]);
+    expect(tmux.sendKeys).toHaveBeenLastCalledWith("r01-qa", ["3"]);
   });
 
   it("uses the visible conversation rather than dismissed loading/review scrollback", async () => {
@@ -930,7 +935,7 @@ describe("Codex runtime adapter", () => {
   // ensureCodexFeatureFlag) + activity-hook-rip-proof.test.ts (negative
   // assertions on adapter symbol absence + endpoint-stays).
 
-  it("launchHarness skips the non-mutating Codex update prompt during resume verification", async () => {
+  it("launchHarness skips the Codex update prompt with one control key during resume verification", async () => {
     const updatePrompt = [
       "✨ Update available! 0.120.0 -> 0.121.0",
       "› 1. Update now (runs `npm install -g @openai/codex`)",
@@ -939,11 +944,15 @@ describe("Codex runtime adapter", () => {
       "Press enter to continue",
     ].join("\n");
     const tmux = mockTmux({
-      capturePaneContent: vi.fn()
+      getPanePid: vi.fn(async () => 901),
+      capturePaneScreen: vi.fn()
+        .mockResolvedValueOnce(updatePrompt)
         .mockResolvedValueOnce(updatePrompt)
         .mockResolvedValue("OpenAI Codex (v0.120.0)\n› Ask Codex to do anything"),
     });
-    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} });
+    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {},
+      listProcesses: () => [{ pid: 901, ppid: 1, pgid: 901, tpgid: 901, executableName: "codex", startedAt: "Sat Jan  1 12:00:00 2000", command: "codex" }],
+    });
 
     const result = await adapter.launchHarness(makeBinding(), { name: "dev-qa@test-rig", resumeToken: "sess-456" });
 
@@ -951,12 +960,11 @@ describe("Codex runtime adapter", () => {
     const sendText = tmux.sendText as ReturnType<typeof vi.fn>;
     expect(sendText.mock.calls).toEqual([
       ["r01-qa", expectedResumeCommand()],
-      ["r01-qa", "3"],
     ]);
     const sendKeys = tmux.sendKeys as ReturnType<typeof vi.fn>;
     expect(sendKeys.mock.calls).toEqual([
       ["r01-qa", ["Enter"]],
-      ["r01-qa", ["Enter"]],
+      ["r01-qa", ["3"]],
     ]);
   });
 
@@ -1186,7 +1194,7 @@ describe("Codex runtime adapter", () => {
 
   // Guard against breaking the working auto-dismiss: a skippable update gate
   // still auto-dismisses and continues to success (covered end-to-end by
-  // "launchHarness skips the non-mutating Codex update prompt during resume
+  // "launchHarness skips the Codex update prompt with one control key during resume
   // verification" above) — only UNRESOLVED gates fail loudly.
 
   it("deliverStartup pre-seeds Codex trust for the managed project", async () => {

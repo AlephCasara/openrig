@@ -877,10 +877,12 @@ describe("Up CLI", () => {
 
   it("up with library name matching existing rig shows ambiguity error", async () => {
     // Mock server that has both a library spec and an existing rig named "my-rig"
+    let startupRequests = 0;
     const origListeners = server.listeners("request");
     server.removeAllListeners("request");
     server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
       const url = decodeURIComponent(req.url ?? "");
+      if (url === "/api/up") startupRequests++;
       if (url.startsWith("/api/specs/library")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify([{ id: "lib1", name: "alpha", sourcePath: "/specs/alpha.yaml" }]));
@@ -903,6 +905,9 @@ describe("Up CLI", () => {
     expect(logs.join("\n")).toContain("ambiguous");
     expect(logs.join("\n")).toContain("existing rig restore target");
     expect(logs.join("\n")).toContain("/specs/alpha.yaml");
+    expect(logs.join("\n")).toContain("rig up alpha --existing");
+    expect(logs.join("\n")).not.toContain("rename or remove");
+    expect(startupRequests).toBe(0);
     expect(exitCode).toBe(1);
   });
 
@@ -942,7 +947,7 @@ describe("Up CLI", () => {
     expect(exitCode).toBeUndefined();
   });
 
-  it("up --existing bypasses library-name ambiguity and posts the rig name", async () => {
+  it.each([false, true])("up --existing bypasses library-name ambiguity with plan=%s", async (plan) => {
     const origListeners = server.listeners("request");
     let lastBody: Record<string, unknown> = {};
     server.removeAllListeners("request");
@@ -963,13 +968,14 @@ describe("Up CLI", () => {
     });
 
     const { logs, exitCode } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "up", "alpha", "--existing"]);
+      await makeCmd().parseAsync(["node", "rig", "up", "alpha", "--existing", ...(plan ? ["--plan"] : [])]);
     });
 
     server.removeAllListeners("request");
     for (const l of origListeners) server.on("request", l as (...args: unknown[]) => void);
 
     expect(lastBody.sourceRef).toBe("alpha");
+    expect(lastBody.plan).toBe(plan);
     expect(logs.join("\n")).toContain('Recovering rig "alpha" from latest snapshot or current DB state');
     expect(exitCode).toBeUndefined();
   });

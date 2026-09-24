@@ -1441,11 +1441,8 @@ export class PodRigInstantiator {
 
     if (hasAttention && !hasLaunched) {
       // All-attention_required path — rig + sessions PRESERVED; no
-      // tear-down. The operator's path: attach to a session via
-      // `tmux attach -t <session>` and answer the runtime prompt. NO
-      // new trust primitive
-      // introduced (HG-5); reuses the runtime's shipped in-pane
-      // trust-grant prompt.
+      // tear-down. Inspect the session and reason to distinguish native
+      // decisions from failed/exited runtimes before choosing recovery.
       const attentionNodes = nodeResults
         .filter((n) => n.status === "attention_required")
         .map((n) => ({
@@ -1469,7 +1466,7 @@ export class PodRigInstantiator {
       return {
         ok: false,
         code: "attention_required",
-        message: `${attentionNodes.length} node${attentionNodes.length === 1 ? "" : "s"} require attention before becoming interactive (rig parked, NOT failed; approve and resume to proceed).`,
+        message: `${attentionNodes.length} node${attentionNodes.length === 1 ? " requires" : "s require"} attention before becoming interactive. Inspect the affected sessions and reasons before choosing recovery.`,
         rigId,
         attentionNodes,
       };

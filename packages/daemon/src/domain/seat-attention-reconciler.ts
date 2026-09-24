@@ -10,10 +10,10 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { defaultListProcesses } from "./resume-metadata-refresher.js";
-import { findExactNativeResumeProcess } from "./native-process-lineage.js";
+import { verifyCodexPaneProcess, type NativeProcessRow, type NativeProcessLister, findExactNativeResumeProcess } from "./native-process-lineage.js";
 
 type PaneIdentityTmux = Pick<TmuxAdapter, "listPanes" | "getPanePid" | "getPaneCommand">;
-type ProcessRow = { pid: number; ppid: number; command: string };
+type ProcessRow = NativeProcessRow;
 
 export type PaneIdentityReconcileResult =
   | { ok: true; pane: string; pid: number; command: string | null }
@@ -30,7 +30,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
   runtime: string | null;
   expectedResumeToken?: string | null;
   requireExactResumeLineage?: boolean;
-  listProcesses?: () => Promise<ProcessRow[]>;
+  listProcesses?: NativeProcessLister;
   now?: () => Date;
 }): Promise<PaneIdentityReconcileResult> {
   const observedAt = (input.now ?? (() => new Date()))().toISOString();
@@ -69,14 +69,22 @@ export async function rebindAndVerifyPaneIdentity(input: {
   } catch (error) {
     return { ok: false, detail: `tmux pane identity lookup failed: ${(error as Error).message}` };
   }
-  const runtimeMatch = classifyPaneRuntimeMatch(command, input.runtime);
+  let runtimeMatch = classifyPaneRuntimeMatch(command, input.runtime);
   const normalizedCommand = command?.trim().toLowerCase() ?? "";
   let lineageMatch: ProcessRow | null = null;
   const expectedResumeToken = input.expectedResumeToken ?? null;
   const strictNativeLineage = input.requireExactResumeLineage === true
     && expectedResumeToken !== null
     && (input.runtime === "claude-code" || input.runtime === "codex");
-  if (pid !== null && runtimeMatch === "match" && strictNativeLineage) {
+  if (input.runtime === "codex") {
+    // A shell/Node label describes the wrapper, not the native occupant.
+    runtimeMatch = "match";
+    const native = await verifyCodexPaneProcess({ target: pane.id, tmux: input.tmux,
+      listProcesses: input.listProcesses, expectedToken: expectedResumeToken,
+      requireResume: input.requireExactResumeLineage === true });
+    const currentPanes = await input.tmux.listPanes(input.sessionName).catch(() => []);
+    if (native?.panePid === pid && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.process;
+  } else if (pid !== null && runtimeMatch === "match" && strictNativeLineage) {
     try {
       lineageMatch = findExactNativeResumeProcess(
         await (input.listProcesses ?? defaultListProcesses)(),
@@ -88,10 +96,9 @@ export async function rebindAndVerifyPaneIdentity(input: {
       // Missing process evidence is ambiguity, never positive identity.
     }
   }
-  const runtimeAmbiguous = runtimeMatch === "match" && (strictNativeLineage
+  const runtimeAmbiguous = input.runtime === "codex" ? lineageMatch === null : runtimeMatch === "match" && (strictNativeLineage
     ? lineageMatch === null
-    : (input.runtime === "claude-code" && !normalizedCommand.includes("claude"))
-      || (input.runtime === "codex" && !normalizedCommand.includes("codex")));
+    : input.runtime === "claude-code" && !normalizedCommand.includes("claude"));
   const verdict: SeatIdentityVerdict = {
     nodeId: input.nodeId,
     verdict: pid === null

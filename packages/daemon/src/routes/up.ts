@@ -60,10 +60,10 @@ export function buildAttentionResponse(result: {
   return {
     error: {
       fact: detail.message,
-      consequence: `Rig ${rigIdDisplay} is created and listable via \`rig ps\`. Sessions are running with startup_status='attention_required'. Tmux panes show the runtime's trust/approval prompt — answering it in-pane completes the launch.`,
+      consequence: `Rig ${rigIdDisplay} is created and listable via \`rig ps\`. Members marked attention_required have not been proven interactive; a runtime may be waiting for input or may have exited.`,
       action: nodeCount === 1
-        ? `Attach to the session and answer the prompt: ${attachHintText}.`
-        : `Attach to each parked session listed in attentionNodes and answer its prompt: ${attachHintText}.`,
+        ? `Inspect the affected session and its reported reason before choosing recovery: ${attachHintText}.`
+        : `Inspect each affected session listed in attentionNodes and its reported reason before choosing recovery: ${attachHintText}.`,
     },
     attentionNodes: detail.attentionNodes,
   };
@@ -414,7 +414,7 @@ upRoutes.post("/", async (c) => {
         // path from the instantiator's new outcome variant OR the
         // mixed launched+attention path the orchestrator routes the
         // same way), surface a 3-part error so the operator sees the
-        // actionable approve→resume path. The rig + sessions are
+        // affected sessions and inspect their actual state. The rig + sessions are
         // PRESERVED on disk; `rig ps` lists them. PRD HG-4.
         const attentionResponse = buildAttentionResponse(result);
         if (attentionResponse) {
