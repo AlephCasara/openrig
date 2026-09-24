@@ -4,12 +4,16 @@ name: yolo
 surface: flag
 launch_posture: full_bypass
 policy_schema_version: 1
-description: Full-bypass posture — the flag-surface YOLO opt-in. Everything runs, nothing prompts. Guardrailed by skills and starter markdown, not by permission-blocking.
+description: Permissive launch opt-in. Claude skips permission prompts; Codex selects danger-full-access but retains native approval policy. Pi enables resource trust.
 ---
 
 # YOLO (built-in policy — flag surface)
 
-The maximum-permissive built-in. The seat runs the harness with its full-bypass launch flag: Claude `--dangerously-skip-permissions`, Codex full-bypass, Pi `--approve`. Nothing prompts; nothing is denied. Use only for fully-trusted autonomous work where any pause is unacceptable.
+This built-in selects Claude `--dangerously-skip-permissions`, Codex
+`-s danger-full-access`, or Pi `--approve` (resource trust). Codex receives no
+approval flag and no named-profile argument on this path: its native approval
+settings still apply. This is not a universal promise that nothing prompts or
+is denied. Use only for work and an environment you deliberately trust.
 
 **APPLICATION is deterministic, NOT skill-translated.** YOLO is a `surface: flag`
 policy: it resolves to a stable launch flag and is applied directly by the runtime
@@ -17,9 +21,15 @@ flag-surface opt-in. The `applying-a-permission-policy` skill does **NOT** trans
 this policy; it points at that setting. The flag surface is stable enough for
 deterministic code, so it does not pay the skill-indirection tax.
 
-**Config policies are MOOT when YOLO is on.** The full-bypass launch flag overrides any Claude prefix rules / Codex posture, so an attached config-surface policy (Locked/Standard/Open) has no effect while YOLO is active. Pick YOLO OR a config policy, not both.
+**Selection and native enforcement are separate.** A member policy overrides the
+rig policy. A resolved config-surface selection chooses OpenRig's normal launch
+mode and takes precedence over ambient YOLO. Native configuration and managed
+restrictions still matter; recording a policy does not translate config rules.
 
-**Guardrails come from skills + starter markdown, not permission-blocking** — a YOLO seat is bounded by what its skills and operating context tell it to do, since the permission layer imposes nothing.
+Skills and starter guidance describe intended behavior; they do not replace
+filesystem/network boundaries. For explicit Codex sandbox-plus-approval choices
+and returning to a restricted setting, see the getting-started permission guide
+at `docs/reference/getting-started.md#opt-in-permissive-operation`.
 
 **Naming:** YOLO names the full-bypass posture plainly; the picker presents all four
 named postures (Locked / Standard / Open / YOLO) uniformly.

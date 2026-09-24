@@ -5,6 +5,15 @@ Start with a repository and one bounded change you can exercise. The shipped
 an independent checker. It uses your installed Codex executable and login;
 terminal-provider support does not change the harness or account being used.
 
+**Choose permissions before starting the team.** The unchanged starter launches
+Codex with `-s workspace-write`; it leaves approval policy to your native Codex
+configuration. Network access is normally off in that sandbox, including access
+to the local OpenRig daemon. Its `profile: default` selects OpenRig resources,
+not a Codex permission profile. Ordinary permission prompts are therefore expected.
+You can keep those prompts, [choose an explicit permissive setup](#opt-in-permissive-operation),
+or [configure a custom policy](#custom-settings-and-precedence). OpenRig does not
+choose permissive operation for everyone.
+
 > Everything below reports **what is currently true**, never a guarantee that
 > downstream work will succeed. "Daemon up" does not mean every agent is healthy;
 > "kernel ready" does not mean every kernel agent is healthy; a workspace root
@@ -70,14 +79,155 @@ seat has an authentication, trust or permission prompt, resolve the named
 prompt before assigning it work. A model pin is configuration; the native
 harness must report the intended model before consequential work.
 
-The default Codex workspace sandbox may also ask before local `rig` calls.
-Approve only the intended operations in the selected instance. A waiting
-permission prompt is not task progress; inspect it before retrying delivery.
+When a seat pauses, open its existing terminal with **o** in the startup view.
+Read the proposed command, working directory and target instance. For an intended
+local `rig` call, choose the native prompt's one-time approval if that is the scope
+you want; a saved command-prefix allowance also affects future matching calls.
+Decline an unexpected operation and tell the same agent what to do instead.
+Approval controls whether an action may run; the sandbox controls its filesystem
+and network access. Turning approvals off does not grant network access.
+
+After answering, watch for the command's result and the agent continuing. Read
+the corresponding queue row and transition from your ordinary terminal. If an
+operation timed out, read its result before asking for another attempt: it may
+already have taken effect. A delivered message or disappearing prompt alone is
+not progress. If startup is still waiting for context delivery, use **c** for the
+same occupant, then **r** to refresh. Do not start another seat to clear a prompt.
 
 `first-project` is a deliberately small starting point, not a universal team.
 For a different installed runtime or team shape, inspect `rig specs ls --kind
 rig` and `rig specs preview <name>` before selecting it. A seven-seat showcase
 is optional and consumes more concurrent capacity.
+
+## Opt-in permissive operation
+
+Permissive operation lets agents act with your account's filesystem and network
+access with fewer permission stops. They can damage files or send data without
+another confirmation. Use it only for work and an environment you deliberately
+trust; it does not supply missing credentials or override organization policy.
+
+Make changes in a **user-owned spec before its first launch**. To customize the
+starter, run `rig specs show first-project --kind rig` and find its `Path`, ending
+in `specs/rigs/launch/first-project/rig.yaml`. Copy that whole `specs` directory to
+`./openrig-specs` in your repository, keeping its layout: copying only `rig.yaml`
+breaks its relative agent and culture references. Leave the installed copy alone.
+The examples below use `./openrig-specs/rigs/launch/first-project/rig.yaml`. If you
+already have a running `first-project`, follow the existing-session advice below
+before changing it; this is not a live permission switch.
+
+### Codex: select sandbox and approvals together
+
+For Codex versions supporting named `.config.toml` profiles, create
+`~/.codex/first-project-permissive.config.toml` (under `CODEX_HOME` instead if you
+set it for the daemon's launch environment):
+
+```toml
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+```
+
+In the copied rig, add this field to **each Codex member** that should use it;
+keep the member's existing `profile: default`:
+
+```yaml
+codex_config_profile: first-project-permissive
+```
+
+Leave `permission_policy` absent or set it to `none`, with no member-level YOLO
+override. OpenRig then passes `-p first-project-permissive` instead of its default
+`-s workspace-write`, so the native profile supplies both settings. Higher-priority
+native project configuration or managed requirements can still change/refuse the
+result. Inspect native `/status` before assigning work.
+
+```sh
+rig policy current --spec ./openrig-specs/rigs/launch/first-project/rig.yaml
+rig up ./openrig-specs/rigs/launch/first-project/rig.yaml --cwd . --plan
+rig up ./openrig-specs/rigs/launch/first-project/rig.yaml --cwd .
+```
+
+OpenRig's separate `permission_policy: builtin:yolo` setting passes only
+`-s danger-full-access` to Codex, **without an approval flag**, and replaces the
+named-profile argument. It does not mean `approval_policy = "never"`. A standalone
+`codex --yolo` command is not an OpenRig launch setting. Use the profile recipe
+above when you want to choose both controls explicitly.
+
+To return to a restricted next launch, change the selected profile to:
+
+```toml
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+network_access = false
+```
+
+### Claude Code: a different launch flag
+
+The shipped `first-project` uses Codex. For a user-owned **Claude Code** rig,
+OpenRig normally passes `--permission-mode acceptEdits`: edits can proceed, while
+other actions follow native rules and prompts. It does not add a global
+`Bash(rig:*)` allowance. To explicitly select the bypass launch flag for that rig:
+
+```sh
+rig policy apply yolo --spec ./my-claude-rig/rig.yaml
+rig policy current --spec ./my-claude-rig/rig.yaml
+```
+
+This records `permission_policy: builtin:yolo`; the next managed launch passes
+`--dangerously-skip-permissions`. Member-level policies take precedence. To return
+future launches to OpenRig's `acceptEdits` mode, use `rig policy apply none --spec
+./my-claude-rig/rig.yaml` and remove any member-level bypass override. Native rules
+and managed restrictions still matter; this flag is not a promise about sandbox
+or account access. See [Claude permissions](https://code.claude.com/docs/en/permissions).
+
+**Already running:** changing a file or running `rig policy apply` does not revoke
+a live agent's permissions, nor rewrite a stored rig's policy on restore. Pause
+work and use the native permission controls for that conversation (current
+Codex and Claude CLIs expose `/permissions`); inspect the effective mode again.
+Keep the launch spec/profile consistent for subsequent launches. If the native
+version cannot apply the change in place, preserve the work and use the supported
+same-seat stop/resume path after checking its retained policy; do not erase the
+rig or start a duplicate to reset permissions. A resume can reapply the stored
+launch mode, so verify the native mode again before continuing work.
+
+## Custom settings and precedence
+
+- **OpenRig:** member `permission_policy` overrides rig `permission_policy`.
+  Normal managed launches bind the default mode explicitly when neither is set;
+  exporting `OPENRIG_YOLO=1` in a client shell is not a reliable per-team recipe.
+  A custom policy file is relative to the declaring rig spec, with no absolute
+  path or `..`. `surface: flag` selects a launch mode. Config-surface policies
+  (`locked`, `standard`, `open`, or custom) describe intent: recording one does
+  not translate and enforce its rules. Apply and inspect the actual native
+  settings separately. See [RigSpec policy references](rig-spec.md#attaching-a-permission-policy).
+- **Codex:** personal settings live in `~/.codex/config.toml` or `CODEX_HOME`;
+  trusted project settings live in `.codex/config.toml`. Current precedence is
+  CLI overrides, trusted project settings, selected profile, user settings,
+  cloud defaults when supplied, `/etc/codex/config.toml` on Unix, then built-in
+  defaults, subject to managed requirements. OpenRig's explicit sandbox flag
+  wins over a file's `sandbox_mode`; use `codex_config_profile` for a custom
+  sandbox instead. For workspace edits with network access while retaining
+  approvals, use a named profile with `sandbox_mode = "workspace-write"`,
+  `approval_policy = "on-request"` and `[sandbox_workspace_write]`
+  `network_access = true`. That grants network access generally, not just to
+  the local daemon. See [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-basic)
+  and [sandbox/approval controls](https://learn.chatgpt.com/docs/agent-approvals-security).
+- **Claude Code:** use `~/.claude/settings.json`, shared project
+  `.claude/settings.json`, or personal project `.claude/settings.local.json`.
+  Managed settings precede launch flags, then project-local, project-shared and
+  user settings. Permission-rule lists combine; a higher-level allow is not a
+  way to defeat a deny. OpenRig's `acceptEdits` launch flag overrides a file's
+  `permissions.defaultMode`; selected runtime resources may also merge into
+  project-local settings. See [Claude settings and precedence](https://code.claude.com/docs/en/settings)
+  and [OpenRig's runtime config disclosure](agent-startup-guide.md#runtime-config-disclosure).
+
+These are source-checked recipes for this OpenRig release, not a native test of
+every provider/version/config combination. Codex 0.155.1 was observed requesting
+approval for local `rig` calls under workspace-write with network disabled;
+that does not establish every timeout's cause. Provider docs evolve: check your
+installed version and effective settings. Newer permission-profile or automatic
+review features are provider choices, not implicit OpenRig capabilities. Private
+startup fixes do not change the released permission defaults described here.
 
 ## Give the owner an outcome
 
