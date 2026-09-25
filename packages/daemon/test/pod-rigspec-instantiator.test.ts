@@ -1262,6 +1262,8 @@ state: 2-named
 
     expect(result.ok).toBe(false);
     if (!result.ok && result.code === "attention_required") {
+      expect(result.message).toMatch(/inspect/i);
+      expect(result.message).not.toMatch(/approve and resume|NOT failed/);
       expect(result.rigId).toBeDefined();
       expect(result.attentionNodes).toBeInstanceOf(Array);
       expect(result.attentionNodes!.length).toBe(1);

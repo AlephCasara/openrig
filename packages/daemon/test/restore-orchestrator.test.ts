@@ -33,6 +33,7 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { observeClaudePermission, observeCodexSandbox, observePiResourceTrust, type AppliedLaunchObservation } from "../src/domain/permission-drift.js";
 import { buildCodexResumeCore } from "../src/domain/native-resume-probe.js";
+import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -884,7 +885,41 @@ describe("RestoreOrchestrator", () => {
     }
   });
 
-  it("reports a managed Codex node wrapper resumed when its child lineage carries the saved native session", async () => {
+  it.each(["full", "subset", "existing-hook", "conflicting-hook"])("proves synthetic shell-wrapped Codex through %s recovery and the next identity poll", async (mode) => {
+    const token = "00000000-0000-7000-8000-000000000001";
+    const snap = seedRigAndSnapshot({ nodes: [{ logicalId: "worker", role: "worker", runtime: "codex" }], edges: [], resumeType: "codex_id", resumeToken: token });
+    // Synthetic IDs, paths and times preserve shell/Node/native foreground relationships.
+    const rows = [
+      { pid: 3001, ppid: 3000, pgid: 3001, tpgid: 3002, executableName: "zsh", command: "-zsh", startedAt: "Sat Jan  1 12:00:00 2000" },
+      { pid: 3002, ppid: 3001, pgid: 3002, tpgid: 3002, executableName: "bash", command: "/bin/sh /tmp/openrig-tmux-send.txt", startedAt: "Sat Jan  1 12:00:00 2000" },
+      { pid: 3003, ppid: 3002, pgid: 3002, tpgid: 3002, executableName: "node", command: `node /opt/bin/codex -s workspace-write -m fixture-model resume --add-dir /tmp/state ${token}`, startedAt: "Sat Jan  1 12:00:00 2000" },
+      { pid: 3004, ppid: 3003, pgid: 3002, tpgid: 3002, executableName: "codex", command: `/opt/native/codex -s workspace-write -m fixture-model resume --add-dir /tmp/state ${token}`, startedAt: "Sat Jan  1 12:00:00 2000" },
+    ];
+    const tmux = { ...mockTmux(), getPanePid: vi.fn(async () => 3001), getPaneCommand: vi.fn(async () => "bash") } as unknown as TmuxAdapter;
+    const listProcesses = async () => {
+      if (mode.endsWith("hook")) db.prepare("UPDATE sessions SET resume_token = ?, resume_provenance = 'hook' WHERE id = (SELECT id FROM sessions ORDER BY id DESC LIMIT 1)").run(mode === "existing-hook" ? token : "other-thread");
+      return rows;
+    };
+    const orch = createOrchestrator({ tmux, listProcesses });
+    const result = mode !== "subset" ? await orch.restore(snap.id) : await orch.launchSingleNode(snap.rigId, "worker", { snapshotId: snap.id });
+    expect(result.ok).toBe(true);
+    const nodes = "result" in result ? result.result?.nodes : result.launched;
+    if (mode === "conflicting-hook") {
+      expect(nodes?.[0]?.status).toBe("attention_required");
+      expect(db.prepare("SELECT verdict FROM seat_identity_verdicts WHERE node_id = ?").get(nodes![0]!.nodeId)).toEqual({ verdict: "mismatch" });
+      expect(db.prepare("SELECT resume_token, resume_provenance FROM sessions ORDER BY id DESC LIMIT 1").get()).toEqual({ resume_token: "other-thread", resume_provenance: "hook" });
+      return;
+    }
+    expect(nodes?.[0]?.status).toBe("resumed");
+    if (mode === "existing-hook") expect(db.prepare("SELECT resume_provenance FROM sessions ORDER BY id DESC LIMIT 1").get()).toEqual({ resume_provenance: "hook" });
+    const nodeId = nodes![0]!.nodeId;
+    const name = sessionRegistry.getBindingForNode(nodeId)!.tmuxSession!;
+    tmux.listSessions = vi.fn(async () => [{ name }] as never);
+    await new SeatIdentityReconciler({ db, tmux, listProcesses } as ConstructorParameters<typeof SeatIdentityReconciler>[0]).reconcileAll();
+    expect(db.prepare("SELECT verdict, observed_pid FROM seat_identity_verdicts WHERE node_id = ?").get(nodeId)).toEqual({ verdict: "verified", observed_pid: 3004 });
+  });
+
+  it("reports a managed Codex wrapper resumed when its native child carries the saved session", async () => {
     const resumeToken = "01a05645-37a2-7dd0-970c-031d2f2510cb";
     const snap = seedRigAndSnapshot({
       nodes: [{ logicalId: "worker", role: "worker", runtime: "codex" }],
@@ -893,13 +928,13 @@ describe("RestoreOrchestrator", () => {
       resumeToken,
     });
     const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "node") } as unknown as TmuxAdapter;
-    const codexCommand = `node /opt/openrig/lib/node_modules/@openai/codex/bin/codex --model gpt-5.6 resume --add-dir /tmp/openrig-state ${resumeToken}`;
+    const codexCommand = `/opt/openrig/vendor/bin/codex --model gpt-5.6 resume --add-dir /tmp/openrig-state ${resumeToken}`;
     const result = await createOrchestrator({
       tmux,
       codex: mockCodexResume({ ok: true }),
       listProcesses: async () => [
-        { pid: 1234, ppid: 1, command: "-zsh" },
-        { pid: 54776, ppid: 1234, command: codexCommand },
+        { pid: 1234, ppid: 1, command: "-zsh", pgid: 1234, tpgid: 54776, executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000" },
+        { pid: 54776, ppid: 1234, command: codexCommand, pgid: 54776, tpgid: 54776, executableName: "codex", startedAt: "Sat Jan  1 12:00:00 2000" },
       ],
     }).restore(snap.id);
 
@@ -929,8 +964,8 @@ describe("RestoreOrchestrator", () => {
       tmux,
       codex: mockCodexResume({ ok: true }),
       listProcesses: async () => [
-        { pid: 1234, ppid: 1, command: "-zsh" },
-        { pid: 54776, ppid: 1234, command: codexCommand },
+        { pid: 1234, ppid: 1, command: "-zsh", pgid: 1234, tpgid: 54776, executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000" },
+        { pid: 54776, ppid: 1234, command: codexCommand, pgid: 54776, tpgid: 54776, executableName: "codex", startedAt: "Sat Jan  1 12:00:00 2000" },
       ],
     }).restore(snap.id);
 
@@ -960,8 +995,8 @@ describe("RestoreOrchestrator", () => {
       tmux,
       codex: mockCodexResume({ ok: true }),
       listProcesses: async () => [
-        { pid: 1234, ppid: 1, command: "-zsh" },
-        { pid: 54776, ppid: 1234, command: codexCommand },
+        { pid: 1234, ppid: 1, command: "-zsh", pgid: 1234, tpgid: 54776, executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000" },
+        { pid: 54776, ppid: 1234, command: codexCommand, pgid: 54776, tpgid: 54776, executableName: "codex", startedAt: "Sat Jan  1 12:00:00 2000" },
       ],
     }).restore(snap.id);
 
@@ -2698,9 +2733,8 @@ describe("RestoreOrchestrator", () => {
       withResumeToken?: boolean;
       withBinding?: boolean;
     }) {
-      // Session name validator requires legacy `r{NN}-{suffix}` or canonical
-      // `{pod}-{member}@{rig}`. Each call gets a unique numeric rig id so the
-      // legacy pattern matches and rig names don't collide.
+      // Use canonical names so adding cases cannot overflow the legacy
+      // two-digit rig-name range.
       const rigName = opts.rigName ?? `r${nextSeed++}`;
       const logicalId = opts.logicalId ?? "worker";
       const runtime = opts.runtime ?? "claude-code";
@@ -2708,7 +2742,7 @@ describe("RestoreOrchestrator", () => {
       const node = rigRepo.addNode(rig.id, logicalId, { role: "worker", runtime });
 
       // Bind a tmux session name so the reconciler can probe.
-      const sessionName = `${rigName}-${logicalId}`;
+      const sessionName = `test-${logicalId}@${rigName}`;
       if (opts.withBinding ?? true) {
         sessionRegistry.updateBinding(node.id, { tmuxSession: sessionName });
       }
@@ -2739,6 +2773,30 @@ describe("RestoreOrchestrator", () => {
 
       return { rig, nodeId: node.id, sessionName };
     }
+
+    it.each([
+      ["OpenAI Codex (v0.155.1)\n› continue", true],
+      ["Update available!", false],
+      ["Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.", false],
+      ["Do you trust the contents of this directory?", false],
+    ])("reconciles wrapped Codex without input only with usable content: %s", async (content, usable) => {
+      const tmux = mockTmuxForReconciler();
+      vi.mocked(tmux.hasSession).mockResolvedValue(true);
+      vi.mocked(tmux.getPaneCommand).mockResolvedValue("bash");
+      vi.mocked(tmux.capturePaneContent).mockResolvedValue(String(content));
+      const seeded = seedFailedAttempt({ runtime: "codex", restoreOutcome: "attention_required", withResumeToken: true });
+      const oldEvent = db.prepare("SELECT payload FROM events WHERE type = 'restore.completed'").get();
+      const listProcesses = async () => [
+        { pid: 1234, ppid: 1, pgid: 1234, tpgid: 1235, command: "bash", executableName: "bash", startedAt: "Sat Jan  1 12:00:00 2000" },
+        { pid: 1235, ppid: 1234, pgid: 1235, tpgid: 1235, command: "codex resume tok-abc-123", executableName: "codex", startedAt: "Sat Jan  1 12:00:00 2000" },
+      ];
+      const result = await createOrchestrator({ tmux, listProcesses }).reconcileNodeRuntimeTruth(seeded.rig.id, seeded.nodeId);
+      expect(result.ok).toBe(usable);
+      expect(tmux.sendKeys).not.toHaveBeenCalled();
+      expect(tmux.sendText).not.toHaveBeenCalled();
+      expect(db.prepare("SELECT payload FROM events WHERE type = 'restore.completed'").get()).toEqual(oldEvent);
+      expect(db.prepare("SELECT * FROM events WHERE type = 'restore.outcome_reconciled'").all()).toHaveLength(usable ? 1 : 0);
+    });
 
     it("upgrades failed -> operator_recovered when ALL four preconditions hold; emits audit event", async () => {
       const tmux = mockTmuxForReconciler();

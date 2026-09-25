@@ -8,6 +8,7 @@ import { getDaemonStatus, getDaemonUrl, startDaemon, type LifecycleDeps, daemonS
 import type { RiggedConfig } from "../config-store.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+import { formatThreePart, type ThreePartRejection } from "./workflow-errors.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 
@@ -295,7 +296,7 @@ Examples:
             console.error(`'${source}' is ambiguous — it matches both an existing rig restore target and a library spec.`);
             console.error(`  To launch the library spec: rig up ${entry.sourcePath}`);
             console.error(`  The rig-name match refers to a stopped rig / snapshot-backed restore path.`);
-            console.error(`  To power on the existing rig: rename or remove the library spec first, then retry.`);
+            console.error(`  To recover the existing rig instead of importing a starter: rig up ${source} --existing`);
             process.exitCode = 1;
             return;
           }
@@ -442,7 +443,15 @@ Examples:
 
       if (res.status >= 400) {
         const code = res.data["code"] as string | undefined;
-        if (code === "cycle_error") {
+        const error = res.data["error"] as Partial<ThreePartRejection> | null | undefined;
+        if (error && typeof error === "object" && typeof error.fact === "string"
+          && typeof error.consequence === "string" && typeof error.action === "string") {
+          for (const line of formatThreePart(error as ThreePartRejection)) console.error(line);
+          const nodes = res.data["attentionNodes"] as Array<{ logicalId: string; sessionName?: string; reason: string }> | undefined;
+          for (const node of nodes ?? []) {
+            console.error(`  ${node.logicalId}${node.sessionName ? ` (${node.sessionName})` : ""}: ${node.reason}`);
+          }
+        } else if (code === "cycle_error") {
           console.error("Cycle detected in rig topology. Check edge definitions for circular dependencies.");
         } else if (code === "validation_failed") {
           const errors = (res.data["errors"] as string[]) ?? [];

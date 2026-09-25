@@ -1,3 +1,4 @@
+import type { NativeProcessLister } from "./native-process-lineage.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
@@ -43,6 +44,7 @@ export interface SeatLifecycleDeps {
   sessionRegistry: SessionRegistry;
   eventBus: EventBus;
   tmuxAdapter: TmuxAdapter;
+  listProcesses?: NativeProcessLister;
   nodeLauncher?: NodeLauncher;
   startupOrchestrator?: StartupOrchestrator;
   runtimeAdapters?: Record<string, RuntimeAdapter>;
@@ -151,6 +153,7 @@ export class SeatLifecycleService {
   private readonly sessionRegistry: SessionRegistry;
   private readonly eventBus: EventBus;
   private readonly tmuxAdapter: TmuxAdapter;
+  private readonly listProcesses?: NativeProcessLister;
   private readonly nodeLauncher: NodeLauncher | null;
   private readonly startupOrchestrator: StartupOrchestrator | null;
   private readonly runtimeAdapters: Record<string, RuntimeAdapter>;
@@ -166,6 +169,7 @@ export class SeatLifecycleService {
     this.sessionRegistry = deps.sessionRegistry;
     this.eventBus = deps.eventBus;
     this.tmuxAdapter = deps.tmuxAdapter;
+    this.listProcesses = deps.listProcesses;
     this.nodeLauncher = deps.nodeLauncher ?? null;
     this.startupOrchestrator = deps.startupOrchestrator ?? null;
     this.runtimeAdapters = deps.runtimeAdapters ?? {};
@@ -610,6 +614,7 @@ export class SeatLifecycleService {
       sessionName: canonicalSessionName,
       runtime: node.runtime,
       expectedResumeToken: this.sessionResumeToken(launch.session.id),
+      listProcesses: this.listProcesses,
     });
     const attentionRequired = !startupResult.ok || !identity.ok;
     if (!identity.ok) this.sessionRegistry.updateStartupStatus(launch.session.id, "attention_required");

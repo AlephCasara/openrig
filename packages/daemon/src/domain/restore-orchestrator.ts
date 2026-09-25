@@ -31,6 +31,7 @@ import type {
 } from "./types.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
+import { SeatIdentityStore } from "./seat-identity-store.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 
 // L3: result shape for runtime-truth reconciliation. A reconciliation that
@@ -1375,7 +1376,7 @@ export class RestoreOrchestrator {
                 ? ((startupResult.continuityOutcome === "resumed" || nativeContinuityProved) ? "resumed" : baseStatus)
                 : baseStatus;
               if (finalStatus === "resumed") {
-                return this.finishJoinedResume(node, sessionName, resumeToken);
+                return this.finishJoinedResume(node, sessionName, resumeToken, launchResult?.session.id);
               }
               return { nodeId: node.id, logicalId: node.logicalId, status: finalStatus };
             }
@@ -1441,7 +1442,7 @@ export class RestoreOrchestrator {
     }
 
     if (baseStatus === "resumed") {
-      return this.finishJoinedResume(node, sessionName, resumeToken);
+      return this.finishJoinedResume(node, sessionName, resumeToken, launchResult?.session.id);
     }
     return { nodeId: node.id, logicalId: node.logicalId, status: baseStatus };
   }
@@ -1452,6 +1453,7 @@ export class RestoreOrchestrator {
     node: SnapshotData["nodes"][number],
     sessionName: string,
     resumeToken: string | null,
+    sessionId?: string,
   ): Promise<RestoreNodeResult> {
     const identity = await rebindAndVerifyPaneIdentity({
       db: this.db,
@@ -1471,6 +1473,22 @@ export class RestoreOrchestrator {
         status: "attention_required",
         error: `Exact native session resumed, but joined restore proof is incomplete: ${identity.detail}. The resumed session was preserved; no replacement was started.`,
       };
+    }
+    // Legacy resume adapters do not write native metadata. Fill only the
+    // launched row's empty token after proof; never overwrite a hook/operator.
+    if (node.runtime === "codex" && sessionId && resumeToken) {
+      const current = this.db.prepare("SELECT node_id, session_name, status, resume_token FROM sessions WHERE id = ?").get(sessionId) as
+        { node_id: string; session_name: string; status: string; resume_token: string | null } | undefined;
+      const sameSession = current?.node_id === node.id && current.session_name === sessionName && current.status === "running";
+      const retained = sameSession && (current.resume_token === resumeToken
+        || (!current.resume_token && this.sessionRegistry.updateResumeToken(sessionId, "codex_id", resumeToken, "scrape")));
+      if (!retained) {
+        const store = new SeatIdentityStore(this.db);
+        const proof = store.getForNode(node.id);
+        if (proof) store.upsert({ ...proof, verdict: "mismatch", reason: "process_identity_mismatch" });
+        return { nodeId: node.id, logicalId: node.logicalId, status: "attention_required",
+          error: "Native resume was observed but its current session metadata conflicts or could not be retained; session preserved." };
+      }
     }
     return { nodeId: node.id, logicalId: node.logicalId, status: "resumed" };
   }

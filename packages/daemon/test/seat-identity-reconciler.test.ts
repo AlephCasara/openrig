@@ -105,6 +105,53 @@ describe("classifyPaneRuntimeMatch", () => {
 });
 
 describe("SeatIdentityReconciler.reconcileAll", () => {
+  it("shares two native observations across wrapped Codex seats and rejects later stale or missing proof", async () => {
+    const db = createFullTestDb();
+    for (const n of [1, 2]) {
+      seedSeat(db, { nodeId: `c${n}`, sessionName: `c${n}@rig`, pane: `%${n}`, runtime: "codex" });
+      db.prepare("UPDATE sessions SET resume_token = ? WHERE node_id = ?").run(`thread-${n}`, `c${n}`);
+    }
+    const tmux = makeTmux({ sessions: ["c1@rig", "c2@rig"], panePid: { "%1": 10, "%2": 20 }, paneCommand: { "%1": "bash", "%2": "node" } });
+    const rows = [1, 2].flatMap(n => [
+      { pid: n * 10, ppid: 1, pgid: n * 10, tpgid: n * 10 + 1, executableName: "bash", command: "bash", startedAt: "Sat Jan  1 12:00:00 2000" },
+      { pid: n * 10 + 1, ppid: n * 10, pgid: n * 10 + 1, tpgid: n * 10 + 1, executableName: "codex", command: `codex resume thread-${n}`, startedAt: "Sat Jan  1 12:00:00 2000" },
+    ]);
+    const listProcesses = vi.fn(async () => rows);
+    const rec = new SeatIdentityReconciler({ db, tmux, listProcesses, now: NOW });
+    const store = new SeatIdentityStore(db);
+    await rec.reconcileAll();
+    expect(listProcesses).toHaveBeenCalledTimes(2);
+    for (const n of [1, 2]) expect(store.getForNode(`c${n}`)).toMatchObject({ verdict: "verified", evidence: { observedPid: n * 10 + 1 } });
+
+    // A reused native PID during the next sweep cannot retain the old green.
+    listProcesses.mockResolvedValueOnce(rows).mockResolvedValueOnce(rows.map(r => r.pid === 11 ? { ...r, startedAt: "Sat Jan  1 12:00:01 2000" } : r));
+    await rec.reconcileAll();
+    expect(store.getForNode("c1")?.verdict).toBe("mismatch");
+    expect(store.getForNode("c2")?.verdict).toBe("verified");
+
+    db.prepare("UPDATE sessions SET resume_token = 'wrong' WHERE node_id = 'c1'").run();
+    await rec.reconcileAll();
+    expect(store.getForNode("c1")?.verdict).toBe("mismatch");
+    listProcesses.mockResolvedValue([]);
+    await rec.reconcileAll();
+    for (const n of [1, 2]) expect(store.getForNode(`c${n}`)?.verdict).toBe("mismatch");
+    db.close();
+  });
+
+  it("keeps fresh Codex distinct from resume, and cannot verify an unavailable pane", async () => {
+    const db = createFullTestDb();
+    seedSeat(db, { nodeId: "c1", sessionName: "c1@rig", pane: "%1", runtime: "codex" });
+    const tmux = makeTmux({ sessions: ["c1@rig"], panePid: { "%1": 10 }, paneCommand: { "%1": "codex" } });
+    const listProcesses = vi.fn(async () => [{ pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: "codex", command: "codex -m configured-model", startedAt: "Sat Jan  1 12:00:00 2000" }]);
+    const rec = new SeatIdentityReconciler({ db, tmux, listProcesses, now: NOW });
+    await rec.reconcileAll();
+    expect(new SeatIdentityStore(db).getForNode("c1")?.verdict).toBe("verified");
+    vi.mocked(tmux.listSessions).mockRejectedValue(new Error("unavailable"));
+    await rec.reconcileAll();
+    expect(new SeatIdentityStore(db).getForNode("c1")?.verdict).toBe("mismatch");
+    db.close();
+  });
+
   it("VERIFIED — matching pane pid + command persists a verified verdict", async () => {
     const db = createFullTestDb();
     seedSeat(db, { nodeId: "n1", sessionName: "s1@rig", pane: "%1", runtime: "claude-code" });

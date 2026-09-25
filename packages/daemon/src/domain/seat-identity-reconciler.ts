@@ -1,3 +1,4 @@
+import { observeCodexPaneProcess, listNativeProcesses, type NativeProcessLister, type CodexProcessObservation } from "./native-process-lineage.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -21,7 +22,8 @@ const SHELL_COMMANDS = new Set([
 ]);
 
 /**
- * Classify the pane's foreground command against the registered runtime.
+ * Legacy short-command classifier. Codex callers additionally require the
+ * shared native-process proof; this label alone is not positive Codex identity.
  *
  * Deliberately LENIENT to preserve the slice-15 no-false-green-for-live-seats
  * invariant: a genuinely-live claude/codex TUI usually reports its host
@@ -66,12 +68,14 @@ interface RunningSeatRow {
   runtime: string | null;
   session_name: string;
   tmux_pane: string | null;
+  resume_token?: string | null;
 }
 
 export interface SeatIdentityReconcilerDeps {
   db: Database.Database;
   tmux: Pick<TmuxAdapter, "listSessions" | "getPanePid" | "getPaneCommand">;
   now?: () => Date;
+  listProcesses?: NativeProcessLister;
 }
 
 /**
@@ -90,6 +94,7 @@ export class SeatIdentityReconciler {
   private readonly tmux: SeatIdentityReconcilerDeps["tmux"];
   private readonly now: () => Date;
   private readonly store: SeatIdentityStore;
+  private readonly listProcesses: NativeProcessLister;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(deps: SeatIdentityReconcilerDeps) {
@@ -97,12 +102,13 @@ export class SeatIdentityReconciler {
     this.tmux = deps.tmux;
     this.now = deps.now ?? (() => new Date());
     this.store = new SeatIdentityStore(deps.db);
+    this.listProcesses = deps.listProcesses ?? listNativeProcesses;
   }
 
   private runningSeats(): RunningSeatRow[] {
     return this.db.prepare(`
       SELECT n.id as node_id, n.runtime as runtime,
-             s.session_name as session_name, b.tmux_pane as tmux_pane
+             s.session_name as session_name, b.tmux_pane as tmux_pane, s.resume_token as resume_token
       FROM nodes n
       JOIN sessions s ON s.node_id = n.id
         AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
@@ -125,7 +131,7 @@ export class SeatIdentityReconciler {
     // One tmux availability probe per poll. If tmux is entirely unreachable
     // (throws) OR reports zero live sessions while we have running seats in
     // the DB, treat it as a transient tmux blip and record `tmux_unavailable`
-    // for every seat — NEVER down-rank a live fleet on an infra hiccup.
+    // for legacy runtimes. Codex remains non-green without native evidence.
     let liveSessions: Set<string> | null = null;
     try {
       const sessions = await this.tmux.listSessions();
@@ -140,12 +146,26 @@ export class SeatIdentityReconciler {
       return;
     }
 
+    // Two fresh process snapshots per sweep, not two ps calls per seat. Each
+    // phase observes every bound pane; the second begins after the first ends.
+    const codexSeats = seats.filter((seat) => seat.runtime === "codex" && seat.tmux_pane && liveSessions.has(seat.session_name));
+    const sample = async () => {
+      let snapshot: ReturnType<NativeProcessLister> | undefined;
+      return Promise.all(codexSeats.map((seat) => observeCodexPaneProcess({
+        target: seat.tmux_pane!, tmux: this.tmux, expectedToken: seat.resume_token,
+        listProcesses: () => snapshot ??= this.listProcesses(),
+      })));
+    };
+    const first = await sample();
+    const second = await sample();
+    const codexProofs = new Map(codexSeats.map((seat, index) => [seat.node_id,
+      first[index] && first[index]?.fingerprint === second[index]?.fingerprint ? second[index]! : null]));
     for (const seat of seats) {
       try {
-        this.store.upsert(await this.computeVerdict(seat, liveSessions, observedAt));
+        this.store.upsert(await this.computeVerdict(seat, liveSessions, observedAt, codexProofs.get(seat.node_id) ?? null));
       } catch {
         // A single seat's tmux failure must not crash the loop; record it as
-        // an unknown (non-down-ranking) observation.
+        // unavailable observation (non-green for Codex).
         this.store.upsert(this.tmuxUnavailableVerdict(seat, observedAt));
       }
     }
@@ -154,7 +174,7 @@ export class SeatIdentityReconciler {
   private tmuxUnavailableVerdict(seat: RunningSeatRow, observedAt: string): SeatIdentityVerdict {
     return {
       nodeId: seat.node_id,
-      verdict: "tmux_unavailable",
+      verdict: seat.runtime === "codex" ? "mismatch" : "tmux_unavailable",
       evidenceSource: null,
       reason: "tmux_unavailable",
       evidence: { registeredPane: seat.tmux_pane, observedPid: null, observedCommand: null, matchedLayer: null },
@@ -167,6 +187,7 @@ export class SeatIdentityReconciler {
     seat: RunningSeatRow,
     liveSessions: Set<string>,
     observedAt: string,
+    native: CodexProcessObservation | null,
   ): Promise<SeatIdentityVerdict> {
     const base = {
       nodeId: seat.node_id,
@@ -176,7 +197,7 @@ export class SeatIdentityReconciler {
 
     // A null binding pane has two distinct causes. When the target session is
     // absent, that is a down-ranking missing-session fact. When it is live,
-    // only the binding is absent: named, but non-down-ranking.
+    // only the binding is absent: named, and non-green for Codex.
     if (!seat.tmux_pane) {
       if (!liveSessions.has(seat.session_name)) {
         return {
@@ -189,7 +210,7 @@ export class SeatIdentityReconciler {
       }
       return {
         ...base,
-        verdict: "binding_absent",
+        verdict: seat.runtime === "codex" ? "mismatch" : "binding_absent",
         evidenceSource: "tmux_session",
         reason: "binding_pane_missing",
         evidence: { registeredPane: null, observedPid: null, observedCommand: null, matchedLayer: null },
@@ -211,6 +232,14 @@ export class SeatIdentityReconciler {
     }
 
     const command = await this.tmux.getPaneCommand(seat.tmux_pane);
+    if (seat.runtime === "codex") {
+      return {
+        ...base, verdict: native?.panePid === pid ? "verified" : "mismatch",
+        evidenceSource: "pane_process", reason: native?.panePid === pid ? null : "process_identity_ambiguous",
+        evidence: { registeredPane: seat.tmux_pane, observedPid: native?.process.pid ?? pid,
+          observedCommand: native?.process.command ?? command, matchedLayer: native?.panePid === pid ? 1 : null },
+      };
+    }
     const match = classifyPaneRuntimeMatch(command, seat.runtime);
     if (match === "mismatch") {
       return {

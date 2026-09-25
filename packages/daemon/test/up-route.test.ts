@@ -858,7 +858,7 @@ edges: []
       expect(r!.error.action).toMatch(/tmux attach -t dev-impl@conveyor/);
       expect(r!.error.action).not.toMatch(/rig setup --cwd/);
       // Singular phrasing for a 1-node case
-      expect(r!.error.action).toMatch(/^Attach to the session/);
+      expect(r!.error.action).toMatch(/^Inspect the affected session/);
       expect(r!.attentionNodes).toHaveLength(1);
       expect(r!.attentionNodes[0]!.logicalId).toBe("dev.impl");
     });
@@ -885,7 +885,7 @@ edges: []
       const r = buildAttentionResponse(result);
       expect(r).not.toBeNull();
       // Plural phrasing
-      expect(r!.error.action).toMatch(/^Attach to each parked session/);
+      expect(r!.error.action).toMatch(/^Inspect each affected session/);
       // First 3 hints listed
       expect(r!.error.action).toContain("tmux attach -t dev-impl@conveyor");
       expect(r!.error.action).toContain("tmux attach -t dev-qa@conveyor");
@@ -915,7 +915,7 @@ edges: []
       };
       const r = buildAttentionResponse(result);
       expect(r).not.toBeNull();
-      expect(r!.error.action).toMatch(/^Attach to each parked session listed in attentionNodes/);
+      expect(r!.error.action).toMatch(/^Inspect each affected session listed in attentionNodes/);
       expect(r!.error.action).toContain("tmux attach -t intake-lead@conveyor");
       expect(r!.error.action).toContain("tmux attach -t plan-planner@conveyor");
       expect(r!.error.action).toContain("tmux attach -t build-builder@conveyor");
