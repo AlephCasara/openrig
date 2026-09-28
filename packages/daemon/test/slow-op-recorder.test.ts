@@ -11,7 +11,9 @@ import { createSlowOpRequestMiddleware } from "../src/domain/slow-op-recorder.js
 
 const expectedSites = new Map<string, string[]>([
   ["adapters/codex-resume.ts", ["codex.resume.profile_preflight"]],
-  ["adapters/codex-runtime-adapter.ts", ["codex.runtime.profile_preflight", "codex.runtime.list_processes"]],
+  ["adapters/codex-runtime-adapter.ts", ["codex.runtime.profile_preflight"]],
+  // The Codex process-table read moved into the shared lineage module; the site name is kept.
+  ["domain/native-process-lineage.ts", ["codex.runtime.list_processes"]],
   ["routes/rigspec.ts", ["rigspec.import.preflight"]],
   ["domain/bootstrap-orchestrator.ts", ["bootstrap.plan.preflight"]],
   ["domain/resume-metadata-refresher.ts", ["resume_metadata.list_processes"]],

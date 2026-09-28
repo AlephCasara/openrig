@@ -804,11 +804,18 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         checkpointStore, nodeLauncher, tmuxAdapter: tmux,
         claudeResume: mockClaudeResumeReturning({ ok: true }),
         codexResume: mockCodexResumeReturning({ ok: true }),
+        // Full ps columns: Codex identity requires the pane's foreground process group, start
+        // time and executable name (native-process-lineage selectCodexProcess); pid/ppid/command
+        // alone is deliberately insufficient positive proof.
         listProcesses: async () => [
-          { pid: 1234, ppid: 1, command: "zsh" },
+          { pid: 1234, ppid: 1, pgid: 1234, tpgid: 5678, executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000", command: "zsh" },
           {
             pid: 5678,
             ppid: 1234,
+            pgid: 5678,
+            tpgid: 5678,
+            executableName: opts.runtime === "codex" ? "codex" : "claude",
+            startedAt: "Sat Jan  1 12:00:00 2000",
             command: opts.runtime === "codex" ? "codex resume tok-abc" : "claude --resume tok-abc",
           },
         ],
