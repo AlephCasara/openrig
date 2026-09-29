@@ -178,3 +178,49 @@ describe("resolveLiveCodexThreadId", () => {
     expect(!out.ok && out.reason).toContain("yielded no thread id");
   });
 });
+
+describe("resolveIdentityVerifiedClaudeRecord — occupant boot_at is a SQLite UTC stamp", () => {
+  it("accepts an identity verified after boot on a non-UTC host", async () => {
+    // occupant_tenures.boot_at comes from datetime('now'): UTC with no zone marker. Read as local
+    // time on a UTC-7 host it lands 7h late, so a fresh identity looked like it predated the boot.
+    const originalTz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      const sessionId = "f16594c5-179a-4be7-bf5e-fd759b2b87a3";
+      const out = await resolveIdentityVerifiedClaudeRecord(
+        {
+          sessionName: "seat@rig",
+          generation: "generation-current",
+          occupantBootAt: "2026-09-04 02:00:00",
+          binding: { tmuxSession: "seat@rig", tmuxPane: "%1" },
+          identity: {
+            verdict: "verified",
+            sessionName: "seat@rig",
+            observedAt: "2026-09-04T02:30:00.000Z",
+            evidence: { registeredPane: "%1", observedPid: 10 },
+          },
+          sidecar: {
+            session_id: sessionId,
+            session_name: "seat@rig",
+            transcript_path: `/transcripts/${sessionId}.jsonl`,
+            sampled_at: "2026-09-04T02:31:00.000Z",
+            occupant_generation: "generation-current",
+          },
+        },
+        {
+          getPanePid: async () => 10,
+          listProcesses: async () => [
+            { pid: 10, ppid: 1, command: "-zsh" },
+            { pid: 20, ppid: 10, command: `claude --resume ${sessionId}` },
+          ],
+          readThreadIdByPid: () => undefined,
+        },
+        () => true,
+      );
+      expect(out).toMatchObject({ ok: true, id: sessionId, source: "generation-sidecar" });
+    } finally {
+      if (originalTz === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTz;
+    }
+  });
+});

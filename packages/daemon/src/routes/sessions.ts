@@ -37,6 +37,7 @@ import { ProcessCensus } from "../domain/process-census.js";
 import { CodexThreadIdResolver } from "../domain/codex-thread-id.js";
 import { resolveLiveCodexThreadId } from "../domain/model-divergence/current-generation-record.js";
 import { SeatIdentityStore } from "../domain/seat-identity-store.js";
+import { parseSqliteUtcMs } from "../domain/sqlite-time.js";
 
 const generationCensus = new ProcessCensus({ freshnessMs: 0 }); // coalesce concurrent receipts; recheck each later read
 const generationThreadIds = new CodexThreadIdResolver();
@@ -697,7 +698,7 @@ sessionAdminRoutes.get("/:sessionName/generation-record", terminalAuthGuard(), a
     if (!occupant || !binding?.tmuxPane || binding.tmuxSession !== sessionName
       || identity?.verdict !== "verified" || identity.sessionName !== sessionName
       || identity.evidence.registeredPane !== binding.tmuxPane
-      || !(Date.parse(identity.observedAt) >= Date.parse(occupant.bootAt))) {
+      || !(Date.parse(identity.observedAt) >= parseSqliteUtcMs(occupant.bootAt))) {
       return c.json({ error: "record_identity_unverified", message: `No verified current occupant/pane binding for '${sessionName}'.` }, 409);
     }
     try {

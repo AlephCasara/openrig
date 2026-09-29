@@ -4,6 +4,7 @@
 // identity tie-breaker: a deliberately retained predecessor may keep writing forever.
 
 import { dirname, join } from "node:path";
+import { parseSqliteUtcMs } from "../sqlite-time.js";
 
 export interface ProcessRow {
   pid: number;
@@ -118,7 +119,9 @@ export async function resolveIdentityVerifiedClaudeRecord(
   if (!input.generation) {
     return { ok: false, reason: `current occupant generation is unknown for ${input.sessionName}` };
   }
-  if (!input.occupantBootAt || !Number.isFinite(Date.parse(input.occupantBootAt))) {
+  // occupant_tenures.boot_at is a zone-less SQLite UTC stamp; a bare Date.parse would read it as local time.
+  const bootAtMs = input.occupantBootAt ? parseSqliteUtcMs(input.occupantBootAt) : NaN;
+  if (!Number.isFinite(bootAtMs)) {
     return { ok: false, reason: `current occupant boot time is unknown for ${input.sessionName}` };
   }
   const binding = input.binding;
@@ -136,7 +139,7 @@ export async function resolveIdentityVerifiedClaudeRecord(
     return { ok: false, reason: `verified identity's registered pane does not match binding ${binding.tmuxPane}` };
   }
   const observedAt = Date.parse(identity.observedAt);
-  if (!Number.isFinite(observedAt) || observedAt < Date.parse(input.occupantBootAt)) {
+  if (!Number.isFinite(observedAt) || observedAt < bootAtMs) {
     return { ok: false, reason: `verified pane identity predates occupant generation ${input.generation}` };
   }
   if (identity.evidence.observedPid === null) {
@@ -182,7 +185,7 @@ export async function resolveIdentityVerifiedClaudeRecord(
     if (
       sidecar?.session_name === input.sessionName
       && Number.isFinite(sampledAt)
-      && sampledAt >= Date.parse(input.occupantBootAt)
+      && sampledAt >= bootAtMs
       && isReadableRecord(sidecarPath)
     ) {
       return { ok: true, id: sidecarId, path: sidecarPath, source: "generation-sidecar" };

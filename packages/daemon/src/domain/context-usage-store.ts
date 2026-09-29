@@ -4,6 +4,7 @@ import os from "node:os";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, unlinkSync } from "node:fs";
 import { resolveCodexDbPaths } from "./codex-thread-id.js";
 import type { ContextUsage, ContextUnknownReason } from "./types.js";
+import { parseSqliteUtcMs } from "./sqlite-time.js";
 import {
   contextUsageDirectory,
   legacyContextUsageDirectory,
@@ -99,15 +100,15 @@ export class ContextUsageStore {
    * (the frozen-88% specimen in the mixed-gen window after handover, where the name is reused so
    * session_mismatch cannot catch it). Returns false when boot time is UNKNOWN or the reading has
    * no sampled_at — the gate is inert (note-2: never treat unknown as stale), leaving
-   * session_mismatch + freshness as the remaining guards. Date.parse tolerates the format skew
-   * between the collector's ISO sampled_at and SQLite datetime('now') boot_at.
+   * session_mismatch + freshness as the remaining guards. boot_at is SQLite datetime('now') (UTC,
+   * no zone marker), so it is parsed as UTC; a bare Date.parse would read it as local time.
    */
   private isPriorGenerationReading(nodeId: string, sampledAt: string | null): boolean {
     if (!sampledAt) return false;
     const bootAt = this.resolveOccupantBootAt?.(nodeId) ?? null;
     if (!bootAt) return false;
     const sampled = Date.parse(sampledAt);
-    const boot = Date.parse(bootAt);
+    const boot = parseSqliteUtcMs(bootAt);
     if (Number.isNaN(sampled) || Number.isNaN(boot)) return false;
     return sampled < boot;
   }
