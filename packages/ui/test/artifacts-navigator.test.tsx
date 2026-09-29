@@ -141,8 +141,11 @@ describe("OPR.0.4.1.21 — Artifacts navigator", () => {
     await waitFor(() => expect(screen.getByTestId("artifacts-file-row-README.md")).toBeTruthy());
     expect(screen.getByTestId("artifacts-file-badge-README.md").textContent).toBe("MD");
     expect(screen.getByTestId("artifacts-file-size-README.md").textContent).toBe("4.0 KB");
-    // mtime sourced from the /list entry (formatted), not fabricated.
-    expect(screen.getByTestId("artifacts-file-mtime-README.md").textContent).toMatch(/06-23/);
+    // mtime sourced from the /list entry (formatted in local time), not fabricated.
+    const fileMtime = TREE["missions/release-0.4.1"][0]!.mtime!;
+    const d = new Date(fileMtime);
+    const expectedDate = new RegExp(`${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+    expect(screen.getByTestId("artifacts-file-mtime-README.md").textContent).toMatch(expectedDate);
   });
 
   it("AC-3: lazy-load boundary — landing fetches only /roots + /list(base); NO file bodies, NO tree pre-walk", async () => {
