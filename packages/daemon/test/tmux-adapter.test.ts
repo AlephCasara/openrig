@@ -83,7 +83,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        'tmux list-windows -t \'my-session\' -F "#{window_index}\t#{window_name}\t#{window_panes}\t#{window_active}"'
+        'tmux list-windows -t \'my-session\' -F "#{window_index}|#{window_name}|#{window_panes}|#{window_active}"'
       );
     });
 
@@ -95,14 +95,14 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        'tmux list-windows -t \'my session\'\"\'\"\'s name\' -F "#{window_index}\t#{window_name}\t#{window_panes}\t#{window_active}"'
+        'tmux list-windows -t \'my session\'\"\'\"\'s name\' -F "#{window_index}|#{window_name}|#{window_panes}|#{window_active}"'
       );
     });
 
     it("parses output into typed TmuxWindow objects", async () => {
       const output = [
-        "0\tmain\t1\t1",
-        "1\twork\t2\t0",
+        "0|main|1|1",
+        "1|work|2|0",
       ].join("\n");
 
       const adapter = new TmuxAdapter(mockExec({ "list-windows": { stdout: output } }));
@@ -115,6 +115,16 @@ describe("TmuxAdapter", () => {
       expect(windows[0]!.active).toBe(true);
       expect(windows[1]!.index).toBe(1);
       expect(windows[1]!.active).toBe(false);
+    });
+
+    it("preserves separators inside window names", async () => {
+      const adapter = new TmuxAdapter(
+        mockExec({ "list-windows": { stdout: "0|foo|bar|3|1" } })
+      );
+
+      const windows = await adapter.listWindows("my-session");
+
+      expect(windows).toEqual([{ index: 0, name: "foo|bar", panes: 3, active: true }]);
     });
 
     it("returns empty array on 'no server running' error", async () => {
