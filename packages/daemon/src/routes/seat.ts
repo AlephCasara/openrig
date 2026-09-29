@@ -17,6 +17,7 @@ import { resolveAuthoredRecapPointer } from "../domain/context-packs/seat-recap-
 import { buildRebuildPrimingChain } from "../domain/rebuild-priming-chain.js";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
+import { transportSenderSession } from "./require-sender-identity.js";
 
 export const seatRoutes = new Hono();
 
@@ -28,7 +29,7 @@ seatRoutes.post("/set-typing-guard/:seatRef", async c => {
   if (typeof body.enabled !== "boolean" || typeof body.reason !== "string" || !body.reason.trim()) {
     return c.json({ error: "enabled boolean and reason required" }, 400);
   }
-  const actor = c.req.header("x-openrig-session")?.trim();
+  const actor = transportSenderSession(c);
   if (!actor) return c.json({ error: "Sender identity required for preference audit" }, 400);
   try {
     const target = guard.target(decodeURIComponent(c.req.param("seatRef")));
@@ -57,7 +58,7 @@ seatRoutes.post("/retire-held-message/:seatRef/:id", async c => {
   const guard = (c.get("tmuxAdapter" as never) as TmuxAdapter).deliveryGuard;
   if (!guard) return c.json({ error: "Delivery guard unavailable" }, 503);
   const body = await c.req.json<Record<string, unknown>>();
-  const actor = c.req.header("x-openrig-session")?.trim();
+  const actor = transportSenderSession(c);
   if (!actor || typeof body.reason !== "string" || !body.reason.trim()) return c.json({ error: "Sender identity and reason required" }, 400);
   try {
     const target = guard.target(decodeURIComponent(c.req.param("seatRef")));
@@ -243,7 +244,7 @@ function seatLifecycleStatus(code: SeatRefusal["code"]): 400 | 404 | 409 | 500 |
 
 seatRoutes.post("/set-permissions/:seatRef", async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
-  const actor = c.req.header("x-openrig-session")?.trim();
+  const actor = transportSenderSession(c);
   if (!actor || !body || Array.isArray(body) || typeof body.mode !== "string" || typeof body.reason !== "string") {
     return c.json({ error: "Sender identity, mode and reason are required" }, 400);
   }

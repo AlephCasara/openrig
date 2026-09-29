@@ -9,6 +9,7 @@ import type { AgentActivity } from "../domain/types.js";
 import * as parkedQuery from "../domain/parked-query.js";
 import { runtimeRungInventory } from "../domain/activity-taxonomy.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
+import { transportSenderSession } from "./require-sender-identity.js";
 
 // ── S19 A4 — the ingest half of the adapter seam: hook events reach the ONE oracle ──
 // (SeatActivityService) through this translation, so AgentActivityStore is reduced to a
@@ -324,7 +325,7 @@ activityRoutes.get("/parked", (c) => {
   // refusal, never a silent fold of every rig on the daemon.
   const seatParam = c.req.query("seat") || undefined;
   const rigParam = c.req.query("rig") || undefined;
-  const callerSession = c.req.header("x-openrig-session") || undefined;
+  const callerSession = transportSenderSession(c);
   let scope: { rig: string; resolvedFrom: "seat-coordinate" | "query-param" | "caller-session" } | null = null;
   if (seatParam?.includes("@")) {
     scope = { rig: seatParam.split("@")[1]!, resolvedFrom: "seat-coordinate" };

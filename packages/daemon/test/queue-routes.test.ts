@@ -19,6 +19,7 @@ import { InboxHandler } from "../src/domain/inbox-handler.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { CLOSURE_REASONS } from "../src/domain/hot-potato-enforcer.js";
 import { queueRoutes } from "../src/routes/queue.js";
+import { setSelfHostId, getSelfHostId } from "../src/domain/hosts/fanout-contract.js";
 
 function buildApp(opts: {
   eventBus: EventBus;
@@ -504,6 +505,60 @@ describe("queue routes", () => {
       expect(closed?.identity_provenance).toBe("transport:v1");
     });
   }
+
+  // #131 — under load the CLI's locality probe can time out and stamp THIS daemon's own self-host id
+  // onto the sender (member@rig@<selfHostId>). The daemon must canonicalize that back to the bare local
+  // seat before every actor compare/record; a FOREIGN host qualifier stays verbatim.
+  describe("self-host-suffixed transport identity (#131)", () => {
+    const SELF = "host-self-131";
+    let priorSelfId: string | null;
+    beforeEach(() => { priorSelfId = getSelfHostId(); setSelfHostId(SELF); });
+    afterEach(() => setSelfHostId(priorSelfId));
+    const post = (url: string, session: string, body: unknown) => app.request(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": session },
+      body: JSON.stringify(body),
+    });
+    const lastActor = (qitemId: string) => (db
+      .prepare("SELECT actor_session FROM queue_transitions WHERE qitem_id = ? ORDER BY rowid DESC LIMIT 1")
+      .get(qitemId) as { actor_session: string }).actor_session;
+
+    it("claim — a self-host-suffixed claimant resolves to the local seat (was claim_destination_mismatch)", async () => {
+      const qitemId = await createForHandoff("b@r");
+      const res = await post(`/api/queue/${qitemId}/claim`, `b@r@${SELF}`, {});
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { state: string }).state).toBe("in-progress");
+      expect(lastActor(qitemId)).toBe("b@r");
+    });
+
+    it("claim — a FOREIGN-host-suffixed claimant is preserved and still refused", async () => {
+      const qitemId = await createForHandoff("b@r");
+      const res = await post(`/api/queue/${qitemId}/claim`, "b@r@host-elsewhere", {});
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(JSON.stringify(await res.json())).toContain("claim_destination_mismatch");
+    });
+
+    it("unclaim, update and handoff record the canonical local actor", async () => {
+      const qitemId = await createAndClaim("b@r");
+      expect((await post(`/api/queue/${qitemId}/unclaim`, `b@r@${SELF}`, {})).status).toBe(200);
+      expect(lastActor(qitemId)).toBe("b@r");
+      expect((await post(`/api/queue/${qitemId}/claim`, `b@r@${SELF}`, {})).status).toBe(200);
+      expect((await post(`/api/queue/${qitemId}/update`, `b@r@${SELF}`, { transitionNote: "progress" })).status).toBe(200);
+      expect(lastActor(qitemId)).toBe("b@r");
+      const handoff = await post(`/api/queue/${qitemId}/handoff`, `b@r@${SELF}`, { toSession: "c@r", body: "next" });
+      expect(handoff.status).toBeLessThan(300);
+      const source = db.prepare("SELECT source_session FROM queue_items WHERE destination_session = 'c@r'").get() as { source_session: string };
+      expect(source.source_session).toBe("b@r");
+    });
+
+    it("create — a self-host-suffixed sender is stored as the bare local source", async () => {
+      const res = await post("/api/queue/create", `orch@r@${SELF}`, { destinationSession: "b@r", body: "x" });
+      expect(res.status).toBeLessThan(300);
+      const qitemId = ((await res.json()) as { qitemId: string }).qitemId;
+      const row = db.prepare("SELECT source_session FROM queue_items WHERE qitem_id = ?").get(qitemId) as { source_session: string };
+      expect(row.source_session).toBe("orch@r");
+    });
+  });
 
   // P21 I3 — claim/unclaim derive the claimant (destinationSession) from the transport header.
   // The repo still enforces you can only (un)claim an item assigned to your identity.

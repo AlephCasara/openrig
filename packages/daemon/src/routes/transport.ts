@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { SessionTransport, TargetSpec } from "../domain/session-transport.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
-import { requireSenderIdentity } from "./require-sender-identity.js";
+import { requireSenderIdentity, transportSenderSession } from "./require-sender-identity.js";
 import type { OutboxHandler } from "../domain/outbox-handler.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 
@@ -88,7 +88,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     // the 401 only ever stopped honest uncounted callers. Instead the send DELIVERS, the
     // already-nullable audit actor records null (projected "unknown"), and the response carries
     // the sign-it notice below.
-    const derivedActor = c.req.header("x-openrig-session")?.trim() || null;
+    const derivedActor = transportSenderSession(c) ?? null;
 
     // Check for ambiguity first
     const resolved = await transport.resolveSessions({ session: body.session });
@@ -253,7 +253,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     // transport header (see /send). An absent header no longer refuses — the send proceeds and the
     // audit's already-nullable actor records null (projected "unknown"); the response carries the
     // sign-it notice below.
-    const derivedActor = c.req.header("x-openrig-session")?.trim() || null;
+    const derivedActor = transportSenderSession(c) ?? null;
 
     // P21 I4 (orch ruling from specimen 5 — the false "From: pm-lead" the incident acted upon): the
     // From: line rendered into every recipient's terminal MUST DERIVE from the transport identity, never

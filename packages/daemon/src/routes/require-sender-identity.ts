@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { getSelfHostId } from "../domain/hosts/fanout-contract.js";
 
 /**
  * P21 sender-provenance chokepoint — the ONE shared route helper that generalizes P18's inline
@@ -33,6 +34,29 @@ import type { Context } from "hono";
 export const SENDER_IDENTITY_HEADER = "x-openrig-session";
 export const ORIGIN_UNKNOWN_HEADER = "x-openrig-origin-unknown";
 
+/**
+ * #131 — ONE canonicalizer for the transport identity. Inside one instance a seat is bare `member@rig`
+ * (local-bare-identity invariant), but the CLI host-qualifies its sender with THIS daemon's own
+ * self-host id whenever its loopback locality probe is slow or fails (client.ts identityHeaders), so a
+ * loaded daemon saw `member@rig@<selfHostId>` and every strict actor compare (claim, unclaim, handoff…)
+ * refused the seat's own work. A trailing `@<selfHostId>` names this host, so it resolves to the local
+ * canonical seat. A FOREIGN host qualifier is a genuine cross-host origin and is preserved verbatim; an
+ * unqualified name, a pre-boot (null) self id, or a shape that is not member@rig@host is unchanged.
+ * Case-sensitive, matching resolvesToLocalHost.
+ */
+export function canonicalSenderSession(session: string, selfId: string | null = getSelfHostId()): string {
+  if (!selfId) return session;
+  const parts = session.split("@");
+  if (parts.length !== 3 || parts.some(p => !p) || parts[2] !== selfId) return session;
+  return `${parts[0]}@${parts[1]}`;
+}
+
+/** The trimmed, canonicalized transport identity (X-OpenRig-Session), or undefined when absent/blank. */
+export function transportSenderSession(c: Context): string | undefined {
+  const raw = c.req.header(SENDER_IDENTITY_HEADER)?.trim();
+  return raw ? canonicalSenderSession(raw) : undefined;
+}
+
 function transportProvenance(c: Context): Exclude<IdentityProvenance, "relay:v1"> {
   return c.req.header(ORIGIN_UNKNOWN_HEADER) === "true" ? "origin-unknown:v1" : "transport:v1";
 }
@@ -49,7 +73,7 @@ export function requireSenderIdentity(
   opts?: { verb?: string; bodyClaim?: string | null },
 ): SenderIdentity {
   const verb = opts?.verb ?? "this action";
-  const session = c.req.header(SENDER_IDENTITY_HEADER)?.trim();
+  const session = transportSenderSession(c);
   const claim = opts?.bodyClaim?.trim();
   if (session) {
     // Transport path — the header PROVED the actor at this hop. P18 SWEEP: the wire SUPERSEDES any body
@@ -116,7 +140,7 @@ export function resolveActorWithDeferral(
   opts?: { verb?: string; bodyClaim?: string | null },
 ): ActorWithDeferral {
   const verb = opts?.verb ?? "this action";
-  const session = c.req.header(SENDER_IDENTITY_HEADER)?.trim();
+  const session = transportSenderSession(c);
   const claim = opts?.bodyClaim?.trim();
   if (session) {
     // Transport path (CLI/DaemonClient stamped the header). P18 SWEEP: the wire SUPERSEDES any body
