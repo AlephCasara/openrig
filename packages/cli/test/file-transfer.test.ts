@@ -7,6 +7,8 @@
 import { describe, it, expect } from "vitest";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import {
   parseFilePathArg,
@@ -332,5 +334,46 @@ describe("file copy output byte boundaries", () => {
     }) as unknown as NonNullable<Parameters<typeof runFileCopy>[1]>["spawn"];
     const result = await runFileCopy({ src: local("/tmp/src"), dst: local("/tmp/dst"), dryRun: true }, { spawn });
     expect(result).toMatchObject({ ok: true, stdout: text, stderr: text });
+  });
+});
+
+let rsyncAvailable = false;
+try { execFileSync("rsync", ["--version"], { stdio: "ignore" }); rsyncAvailable = true; }
+catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+}
+
+describe("local directory copy semantics", () => {
+  it("preserves the trailing slash in the normalized local source and rsync argv", () => {
+    const source = "." + path.sep + "copy-source" + path.sep;
+    const planned = planFileCopy(source, "." + path.sep + "copy-destination");
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) return;
+    const expectedSource = path.resolve("copy-source") + path.sep;
+    expect(planned.plan.src.path).toBe(expectedSource);
+    expect(buildRsyncArgv(planned.plan).slice(-2)[0]).toBe(expectedSource);
+  });
+
+  it.skipIf(!rsyncAvailable).each([false, true])("native rsync preserves source directory trailing slash=%s (requires installed rsync)", async (contentsOnly) => {
+    const root = mkdtempSync(path.join(process.cwd(), "openrig-copy-contents-"));
+    try {
+      const src = path.join(root, "source");
+      const dst = path.join(root, "destination");
+      mkdirSync(src); mkdirSync(dst);
+      writeFileSync(path.join(src, "artifact.txt"), "owned test artifact");
+      const localSrc = "." + path.sep + path.relative(process.cwd(), src);
+      const localDst = "." + path.sep + path.relative(process.cwd(), dst);
+      const planned = planFileCopy(localSrc + (contentsOnly ? path.sep : ""), localDst);
+      expect(planned.ok).toBe(true);
+      if (!planned.ok) return;
+      const result = await runFileCopy(planned.plan);
+      expect(result.ok, result.stderr).toBe(true);
+      const expected = path.join(dst, ...(contentsOnly ? [] : ["source"]), "artifact.txt");
+      expect(existsSync(expected), `rsync destination should be ${expected}`).toBe(true);
+      expect(readFileSync(expected, "utf8")).toBe("owned test artifact");
+      if (contentsOnly) expect(existsSync(path.join(dst, "source"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
