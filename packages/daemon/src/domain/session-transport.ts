@@ -11,6 +11,7 @@ import { wrapPaneEnvelope, appendDeliveredSegment, type EnvelopeScope } from "..
 import { getSelfHostId } from "./hosts/fanout-contract.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { isShellForeground } from "./shell-classifier.js";
+import { verifyCodexPaneProcess, type NativeProcessLister } from "./native-process-lineage.js";
 import type { SlowOperationInstrumentation } from "./slow-op-recorder.js";
 import { hashSentText, type CaptureObserverSink, type CaptureSlot, type ObservationInput, type ObservedBinding } from "./capture-observer.js";
 
@@ -543,11 +544,12 @@ interface SessionTransportDeps {
   activityEndpointFile?: () => { baseUrl: string; token: string } | null;
   /** S01/S02 P2: optional read-only capture observer. Absent by default (no activation). */
   captureObserver?: CaptureObserverSink;
+  listProcesses?: NativeProcessLister;
 }
 
 interface SessionRow { node_id: string; session_name: string; }
 interface NodeRow { rig_id: string; logical_id: string; }
-interface SessionMetaRow { runtime: string | null; attachment_type: string | null; node_id: string | null; binding_session: string | null; pane: string | null; occupant: string | null; }
+interface SessionMetaRow { runtime: string | null; attachment_type: string | null; node_id: string | null; binding_session: string | null; pane: string | null; occupant: string | null; resume_token: string | null; }
 interface ResolvedTarget { sessionName: string; rigName: string; nodeLogicalId: string; }
 
 export class SessionTransport {
@@ -564,6 +566,7 @@ export class SessionTransport {
   private slowOpRecorder?: SlowOperationInstrumentation;
   private activityEndpointFile: () => { baseUrl: string; token: string } | null;
   private captureObserver?: CaptureObserverSink;
+  private listProcesses?: NativeProcessLister;
 
   constructor(deps: SessionTransportDeps) {
     this.db = deps.db;
@@ -579,6 +582,7 @@ export class SessionTransport {
     this.slowOpRecorder = deps.slowOpRecorder;
     this.activityEndpointFile = deps.activityEndpointFile ?? (() => null);
     this.captureObserver = deps.captureObserver;
+    this.listProcesses = deps.listProcesses;
   }
 
   /**
@@ -626,7 +630,7 @@ export class SessionTransport {
   }
 
   private getSessionMeta(sessionName: string): {
-    runtime: string | null; attachmentType: string | null; nodeId: string | null; pane: string | null; occupant: string | null;
+    runtime: string | null; attachmentType: string | null; nodeId: string | null; pane: string | null; occupant: string | null; resumeToken: string | null;
   } {
     // One existing statement; P2 reads the binding columns it already joins plus the
     // same current-occupant subselect the delivery guard uses. No extra query.
@@ -637,6 +641,7 @@ export class SessionTransport {
         n.id AS node_id,
         b.tmux_session AS binding_session,
         b.tmux_pane AS pane,
+        s.resume_token AS resume_token,
         (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id = n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant
       FROM sessions s
       JOIN nodes n ON s.node_id = n.id
@@ -654,6 +659,7 @@ export class SessionTransport {
       // binding whose session IS this name labels pane/occupant; otherwise unknown.
       pane: row?.binding_session === sessionName ? row?.pane ?? null : null,
       occupant: row?.binding_session === sessionName ? row?.occupant ?? null : null,
+      resumeToken: row?.resume_token ?? null,
     };
   }
 
@@ -987,9 +993,10 @@ export class SessionTransport {
     }
 
     // #142 — an agent seat whose runtime is not running shows a bare shell, and text typed there runs as
-    // shell commands. That is positive evidence, like an interactive prompt, so refuse before any write.
-    // A terminal node's shell is its runtime; an unknown runtime or unreadable pane stays advisory.
-    const bareShell = runtime && runtime !== "terminal" ? await this.bareShellForeground(sessionName) : null;
+    // shell commands. A Codex launch wrapper can have the same label: only positive native
+    // process proof clears that refusal. A terminal's shell is its runtime; unreadable stays advisory.
+    const bareShell = runtime && runtime !== "terminal"
+      ? await this.bareShellForeground(sessionName, runtime, sessionMeta.pane, sessionMeta.resumeToken) : null;
     if (bareShell) {
       return observe({
         ok: false,
@@ -1435,13 +1442,23 @@ export class SessionTransport {
   }
 
   /** The shell name when the pane's foreground is a bare shell; null when it is not, or unknown. */
-  private async bareShellForeground(sessionName: string): Promise<string | null> {
+  private async bareShellForeground(sessionName: string, runtime: string, pane: string | null, resumeToken: string | null): Promise<string | null> {
+    let paneCommand: string | null;
     try {
-      const paneCommand = await this.tmuxAdapter.getPaneCommand(sessionName);
-      return paneCommand && isShellForeground(paneCommand) ? paneCommand.replace(/^-/, "") : null;
+      paneCommand = await this.tmuxAdapter.getPaneCommand(sessionName);
     } catch {
       return null;
     }
+    if (!paneCommand || !isShellForeground(paneCommand)) return null;
+    if (runtime === "codex" && pane) {
+      // Reuse the identity reconciler's stable, foreground, pane-descendant proof.
+      // A resumed process must also name this session's token. Stale UI, a Node
+      // launcher alone, missing observations or a native process elsewhere cannot clear it.
+      const native = await verifyCodexPaneProcess({ target: sessionName, tmux: this.tmuxAdapter,
+        listProcesses: this.listProcesses, expectedToken: resumeToken });
+      if (native && await this.tmuxAdapter.getPanePid(pane).catch(() => null) === native.panePid) return null;
+    }
+    return paneCommand.replace(/^-/, "");
   }
 
   private async classifySendReadiness(input: {

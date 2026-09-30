@@ -18,6 +18,7 @@ import type { PolicyJob } from "../src/domain/policies/types.js";
 import type { WatchdogHistoryEntry } from "../src/domain/watchdog-history-log.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import type { NativeProcessRow } from "../src/domain/native-process-lineage.js";
 
 function tmuxWithPane(getPaneCommand: () => Promise<string | null>) {
   const sendText = vi.fn(async () => ({ ok: true as const }));
@@ -52,6 +53,7 @@ describe("#142 transport refuses to type into a bare shell where an agent runtim
     const session = sessionRegistry.registerSession(node.id, name);
     sessionRegistry.updateStatus(session.id, "running");
     sessionRegistry.updateBinding(node.id, { tmuxSession: name });
+    return { node, session };
   }
 
   // The watchdog's deliver() makes exactly this call (startup.ts parked-owner delivery).
@@ -79,6 +81,86 @@ describe("#142 transport refuses to type into a bare shell where an agent runtim
 
     expect(result.ok).toBe(true);
     expect(sendText).toHaveBeenCalledOnce();
+  });
+
+  // 2026-09-29 guest: the ready checker still read as bash at the #142 guard.
+  // Model its pane -> sh -> Node launcher -> native Codex chain. Process-group
+  // and start-time values below are synthetic; native execution remains a separate check.
+  const nativeToken = "01a0ef72-c681-7a21-abc6-c0bdd0a3bc98";
+  function wrapperProcesses(): NativeProcessRow[] {
+    const startedAt = "Tue Sep 29 23:33:00 2026";
+    return [
+      { pid: 1135, ppid: 1, pgid: 1135, tpgid: 1196, executableName: "zsh", command: "-zsh", startedAt },
+      { pid: 1196, ppid: 1135, pgid: 1196, tpgid: 1196, executableName: "bash", command: "/bin/sh /tmp/launch.txt", startedAt },
+      { pid: 1199, ppid: 1196, pgid: 1196, tpgid: 1196, executableName: "node", command: `node /opt/bin/codex resume ${nativeToken}`, startedAt },
+      { pid: 1205, ppid: 1199, pgid: 1196, tpgid: 1196, executableName: "codex", command: `/opt/native/codex resume ${nativeToken}`, startedAt },
+    ];
+  }
+
+  function wrappedSeat(listProcesses = vi.fn(async () => wrapperProcesses())) {
+    const { node, session } = seat("codex", "dev-check@my-rig");
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-check@my-rig", tmuxPane: "%1" });
+    sessionRegistry.updateResumeToken(session.id, "codex", nativeToken);
+    const ports = tmuxWithPane(async () => "bash");
+    ports.tmux.getPanePid = vi.fn(async () => 1135);
+    const deps = { db, rigRepo, sessionRegistry, tmuxAdapter: ports.tmux, listProcesses, sleep: async () => {} };
+    return { ...ports, node, session, listProcesses, transport: new SessionTransport(deps) };
+  }
+
+  it.each(["ordinary verified send", "queue nudge", "watchdog wake"])("wrapped native Codex receives %s", async kind => {
+    const { transport, sendText, sendKeys, listProcesses } = wrappedSeat();
+    const result = kind === "watchdog wake"
+      ? await watchdogSend(transport, "dev-check@my-rig")
+      : await transport.send("dev-check@my-rig", "existing review", {
+        verify: true, ...(kind === "queue nudge" ? { actorSession: "dev-owner@my-rig", auditPointer: "existing-review", deliveryId: "nudge-1" } : {}),
+      });
+    expect(result.ok).toBe(true);
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendKeys).toHaveBeenCalledOnce();
+    expect(listProcesses).toHaveBeenCalledTimes(2);
+  });
+
+  it("proven native wrapper still refuses an approval prompt", async () => {
+    const { transport, tmux, sendText, sendKeys } = wrappedSeat();
+    tmux.capturePaneContent = async () => "Would you like to run the following command?\n› 1. Yes, proceed (y)\n2. No\nPress enter to confirm or esc to cancel";
+    expect(await transport.send("dev-check@my-rig", "existing review")).toMatchObject({ ok: false, reason: "target_needs_input" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("allows a fresh native wrapper without inventing a resume identity", async () => {
+    const { transport, session, listProcesses, sendText } = wrappedSeat();
+    sessionRegistry.clearResumeToken(session.id);
+    listProcesses.mockResolvedValue(wrapperProcesses().map(r => r.pid === 1205
+      ? { ...r, command: "/opt/native/codex -m model" } : r));
+    expect((await watchdogSend(transport, "dev-check@my-rig")).ok).toBe(true);
+    expect(sendText).toHaveBeenCalledOnce();
+  });
+
+  const unproved: [string, (rows: NativeProcessRow[]) => NativeProcessRow[]][] = [
+    ["exited native with stale UI", rows => rows.slice(0, -1)],
+    ["background native", rows => rows.map(r => r.pid === 1205 ? { ...r, pgid: 999 } : r)],
+    ["another pane's native", rows => rows.map(r => r.pid === 1205 ? { ...r, ppid: 999 } : r)],
+    ["wrong resume identity", rows => rows.map(r => r.pid === 1205 ? { ...r, command: "/opt/native/codex resume different" } : r)],
+    ["incomplete process identity", rows => rows.map(r => ({ ...r, startedAt: undefined }))],
+  ];
+  it.each(unproved)("shell label still refuses %s without input", async (_name, mutate) => {
+    const { transport, sendText, sendKeys } = wrappedSeat(vi.fn(async () => mutate(wrapperProcesses())));
+    expect(await watchdogSend(transport, "dev-check@my-rig")).toMatchObject({ ok: false, sent: false, reason: "target_runtime_not_running" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing binding", "wrong bound pane", "missing resume identity", "changed process", "unavailable processes"])("refuses %s behind the shell label", async kind => {
+    const { transport, node, session, tmux, listProcesses, sendText, sendKeys } = wrappedSeat();
+    if (kind === "missing binding") sessionRegistry.clearBinding(node.id);
+    if (kind === "wrong bound pane") tmux.getPanePid = async target => target === "%1" ? 999 : 1135;
+    if (kind === "missing resume identity") sessionRegistry.clearResumeToken(session.id);
+    if (kind === "changed process") listProcesses.mockResolvedValueOnce(wrapperProcesses()).mockResolvedValueOnce(wrapperProcesses().slice(0, -1));
+    if (kind === "unavailable processes") listProcesses.mockRejectedValue(new Error("process observation failed"));
+    expect(await watchdogSend(transport, "dev-check@my-rig")).toMatchObject({ ok: false, sent: false, reason: "target_runtime_not_running" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
   });
 
   it("negative: a terminal node's shell is its runtime, so it still receives text", async () => {
