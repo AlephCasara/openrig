@@ -100,18 +100,11 @@ export class PiResumeAdapter {
       launchId,
     });
 
-    const textResult = await this.tmux.sendText(tmuxSessionName, cmd);
+    // Short commands retain the direct path; long commands exec from a private script.
+    const textResult = await this.tmux.sendShellCommand(tmuxSessionName, cmd, undefined, { stageIfLong: true, execInScript: true });
     if (!textResult.ok) {
       return { ok: false, code: "resume_failed", message: textResult.message };
     }
-    const keyResult = await this.tmux.sendKeys(tmuxSessionName, ["Enter"]);
-    if (!keyResult.ok) {
-      // Partial failure: command text is in the buffer but Enter failed.
-      // Best-effort cleanup: send C-c to clear the typed command.
-      await this.tmux.sendKeys(tmuxSessionName, ["C-c"]);
-      return { ok: false, code: "resume_failed", message: keyResult.message };
-    }
-
     const result = await this.verifyResume(tmuxSessionName, sessionFile, launchId);
     return result.ok ? { ...result, appliedLaunch } : result;
   }

@@ -250,13 +250,10 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       launchId,
     });
 
-    const textResult = await this.tmux.sendText(sessionName, cmd);
+    // Stage long commands without leaving a shell above the live runner.
+    const textResult = await this.tmux.sendShellCommand(sessionName, cmd, undefined, { stageIfLong: true, execInScript: true });
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
-    }
-    const enterResult = await this.tmux.sendKeys(sessionName, ["Enter"]);
-    if (!enterResult.ok) {
-      return { ok: false, error: `Failed to send Enter: ${enterResult.message}` };
     }
 
     // The runner writes the sidecar after its first successful get_state;
