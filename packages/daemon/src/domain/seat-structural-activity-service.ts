@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { TmuxAdapter } from "../adapters/tmux.js";
+import type { PaneCapture, TmuxAdapter } from "../adapters/tmux.js";
 import { classifyPaneActivity, type PaneActivityClassification } from "./session-transport.js";
 
 /** A cached STRUCTURAL pane observation: the classifyPaneActivity verdict plus WHEN the pane was read
@@ -45,7 +45,7 @@ export class SeatStructuralActivityService {
   private sweeping = false; // single-flight guard: one whole-fleet sweep at a time (MUST-FIX 2)
 
   constructor(
-    private readonly tmuxAdapter: Pick<TmuxAdapter, "capturePaneContent">,
+    private readonly tmuxAdapter: Pick<TmuxAdapter, "capturePaneContent"> & Partial<Pick<TmuxAdapter, "capturePanesContent">>,
     private readonly now: () => Date = () => new Date(),
     private readonly captureLines: number = 20,
     private readonly staleAfterMs: number = DEFAULT_STRUCTURAL_STALE_MS,
@@ -66,14 +66,22 @@ export class SeatStructuralActivityService {
 
   /** Capture + structurally classify one seat's pane, caching the observation keyed by session name. A
    *  null or failed capture INVALIDATES the prior row (never leaves a stale positive verdict) and
-   *  returns null (MUST-FIX 1). */
-  async pollSeat(sessionName: string): Promise<StructuralObservation | null> {
+   *  returns null (MUST-FIX 1). `prefetched` (#308) is the sweep's batched capture: a session it holds (null = gone or
+   *  empty) is used as is; one it lacks is captured here, per seat. */
+  async pollSeat(sessionName: string, prefetched?: Map<string, PaneCapture> | null): Promise<StructuralObservation | null> {
     let content: string | null;
-    try {
-      content = await this.tmuxAdapter.capturePaneContent(sessionName, this.captureLines);
-    } catch {
-      this.latestBySession.delete(sessionName);
-      return null;
+    let observedAt: Date | null = null;
+    if (prefetched?.has(sessionName)) {
+      const capture = prefetched.get(sessionName)!;
+      content = capture.text;
+      observedAt = capture.capturedAt; // the capture's own time, never the end of the sweep (#309 review)
+    } else {
+      try {
+        content = await this.tmuxAdapter.capturePaneContent(sessionName, this.captureLines);
+      } catch {
+        this.latestBySession.delete(sessionName);
+        return null;
+      }
     }
     if (content === null) {
       this.latestBySession.delete(sessionName);
@@ -84,7 +92,7 @@ export class SeatStructuralActivityService {
       state: c.state,
       reason: c.reason,
       evidence: c.evidence,
-      observedAt: this.now().toISOString(),
+      observedAt: (observedAt ?? this.now()).toISOString(),
     };
     this.latestBySession.set(sessionName, obs);
     return obs;
@@ -111,8 +119,13 @@ export class SeatStructuralActivityService {
       for (const s of Array.from(this.latestBySession.keys())) {
         if (!live.has(s)) this.latestBySession.delete(s); // release memory + never serve a stale read
       }
+      // #308: one batched capture for the whole fleet (a few tmux calls) instead of a fork per seat; anything the batch
+      // didn't cover (no listing, a failed chunk) is read per seat inside pollSeat, as before.
+      const prefetched = this.tmuxAdapter.capturePanesContent
+        ? await this.tmuxAdapter.capturePanesContent(rows.map((r) => r.session_name), this.captureLines, this.now).catch(() => null)
+        : null;
       await Promise.all(rows.map(async (r) => {
-        try { await this.pollSeat(r.session_name); } catch { /* isolate: one seat's failure never crashes the sweep */ }
+        try { await this.pollSeat(r.session_name, prefetched); } catch { /* isolate: one seat's failure never crashes the sweep */ }
       }));
     } finally {
       this.sweeping = false;
