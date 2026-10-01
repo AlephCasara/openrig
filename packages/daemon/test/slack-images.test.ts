@@ -2,7 +2,8 @@
 // Hermetic, fixture-backed: the three legs (getUploadURLExternal → byte POST → complete with
 // thread_ts) are captured at the fetch boundary. The live phone render is the named external
 // door; these receipts prove the mechanical path.
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -153,6 +154,24 @@ describe("local attachments: images, video and PDF from disk, size-capped, misse
     expect(defaultReadLocalImage(path.join(dir, "gone.mp4"))).toEqual({ skipped: "unreadable (ENOENT)" });
     fs.mkdirSync(path.join(dir, "folder.mp4"));
     expect(defaultReadLocalImage(path.join(dir, "folder.mp4"))).toEqual({ skipped: "not a regular file" });
+  });
+
+  it("the reader opens the path once and reads the descriptor it checked; a FIFO is refused without blocking", () => {
+    const real = file("once.png", 4096);
+    const openSpy = vi.spyOn(fs, "openSync"), statSpy = vi.spyOn(fs, "statSync"), readFileSpy = vi.spyOn(fs, "readFileSync");
+    try {
+      const r = defaultReadLocalImage(real);
+      expect(r).toMatchObject({ filename: "once.png" });
+      expect((r as { bytes: Uint8Array }).bytes.length).toBe(4096);
+      expect(openSpy.mock.calls.filter((c) => c[0] === real)).toHaveLength(1);
+      expect(statSpy.mock.calls.filter((c) => c[0] === real)).toHaveLength(0);
+      expect(readFileSpy.mock.calls.filter((c) => c[0] === real)).toHaveLength(0);
+    } finally {
+      openSpy.mockRestore(); statSpy.mockRestore(); readFileSpy.mockRestore();
+    }
+    const fifo = path.join(dir, "pipe.mp4");
+    execFileSync("mkfifo", [fifo]);
+    expect(defaultReadLocalImage(fifo)).toEqual({ skipped: "not a regular file" }); // returns: no writer needed
   });
 
   it("a local video rides the three legs into the thread", async () => {

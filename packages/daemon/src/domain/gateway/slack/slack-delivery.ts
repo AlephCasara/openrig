@@ -105,16 +105,29 @@ function pendingTransportFailureReceipt(
 export function defaultReadLocalImage(refPath: string): LocalAttachment | null {
   if (!path.isAbsolute(refPath)) return null;
   if (!LOCAL_ATTACHMENT_EXT.has(path.extname(refPath).toLowerCase())) return null;
+  // The path is resolved ONCE: open it, then stat and read that same descriptor, so the file checked is the file
+  // sent. O_NONBLOCK keeps the open from waiting on a FIFO (refused below as not a regular file), and the read is
+  // bounded by the size just checked.
+  let fd: number | null = null;
   try {
-    const st = fs.statSync(refPath);
+    fd = fs.openSync(refPath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const st = fs.fstatSync(fd);
     if (!st.isFile()) return { skipped: "not a regular file" };
     if (st.size > LOCAL_ATTACHMENT_MAX_BYTES) {
       return { skipped: `${st.size} bytes is over the ${LOCAL_ATTACHMENT_MAX_BYTES}-byte attachment cap` };
     }
-    const bytes = fs.readFileSync(refPath);
-    return { bytes: new Uint8Array(bytes), filename: path.basename(refPath) };
+    const bytes = new Uint8Array(st.size);
+    let read = 0;
+    while (read < bytes.length) {
+      const n = fs.readSync(fd, bytes, read, bytes.length - read, read);
+      if (n === 0) break;
+      read += n;
+    }
+    return { bytes: read === bytes.length ? bytes : bytes.subarray(0, read), filename: path.basename(refPath) };
   } catch (e) {
     return { skipped: `unreadable (${(e as NodeJS.ErrnoException).code ?? "error"})` };
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
   }
 }
 
