@@ -19,9 +19,43 @@ export function terminalAuthMiddleware(opts: { bearerToken: string | null }) {
       const origin = c.req.header("Origin");
       if (origin) {
         try {
-          const originHost = new URL(origin).hostname;
-          const requestHost = c.req.header("Host")?.split(":")[0] ?? "";
-          const allowed = originHost === requestHost || originHost === "localhost" || originHost === "127.0.0.1";
+          const originUrl = new URL(origin);
+          const originHost = originUrl.hostname.toLowerCase();
+          const requestHost = c.req.header("Host")?.split(":")[0]?.toLowerCase() ?? "";
+          const isLoopbackIpv4 = /^127(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}$/.test(originHost);
+          const isLocal =
+            originHost === "localhost" ||
+            originHost === "127.0.0.1" ||
+            originHost === "::1" ||
+            originHost === "[::1]" ||
+            isLoopbackIpv4;
+
+          const configuredAllowed = process.env.OPENRIG_ALLOWED_ORIGINS
+            ? process.env.OPENRIG_ALLOWED_ORIGINS.split(",").map((s) => s.trim().toLowerCase())
+            : [];
+
+          const isExplicitlyAllowed = configuredAllowed.some((allowed) => {
+            if (!allowed) return false;
+            try {
+              if (allowed.startsWith("http://") || allowed.startsWith("https://")) {
+                const u = new URL(allowed);
+                return u.origin.toLowerCase() === originUrl.origin.toLowerCase();
+              }
+              return allowed.toLowerCase() === originHost;
+            } catch {
+              return false;
+            }
+          });
+
+          // In unauthenticated loopback mode (!opts.bearerToken), same-host matching
+          // requires loopback or explicitly allowed origin to prevent DNS rebinding attacks.
+          const isSameHost = Boolean(
+            requestHost &&
+            originHost === requestHost &&
+            (opts.bearerToken !== null || isLocal || isExplicitlyAllowed),
+          );
+
+          const allowed = isLocal || isExplicitlyAllowed || isSameHost;
           if (!allowed) return c.json({ error: "origin_rejected", hint: `Origin ${origin} does not match host` }, 403);
         } catch {
           return c.json({ error: "origin_rejected", hint: "Malformed Origin header" }, 403);
