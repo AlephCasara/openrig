@@ -1054,6 +1054,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     },
   });
 
+  // Capture compatibility before the spec-library initializer creates the primary directory.
+  const userSpecLibraryRoot = getDefaultOpenRigPath("specs");
+  const compatibleSpecLibraryRoot = getCompatibleOpenRigPath("specs");
+
   const deps: AppDeps = {
     rigRepo,
     sessionRegistry,
@@ -1234,8 +1238,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     kernelBootTracker,
     specReviewService,
     specLibraryService: (() => {
-      const userSpecsRoot = getDefaultOpenRigPath("specs");
-      const legacySpecsRoot = getCompatibleOpenRigPath("specs");
+      const userSpecsRoot = userSpecLibraryRoot;
+      const legacySpecsRoot = compatibleSpecLibraryRoot;
       try { fs.mkdirSync(userSpecsRoot, { recursive: true }); } catch { /* best-effort */ }
       // From src/ or dist/, ../specs points to packages/daemon/specs/
       const builtinSpecsRoot = nodePath.resolve(import.meta.dirname, "../specs");
@@ -1253,13 +1257,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       lib.scan();
       return lib;
     })(),
-    // Phase 3a slice 3.3 — plugin discovery service.
-    // SC-29 EXCEPTION #8 verbatim: see packages/daemon/src/routes/plugins.ts
-    // header. Filesystem-scan over 3 source roots + agent.yaml-parse for
-    // used-by reverse query. No SQL; no mutation. Spec library directory
-    // for used-by uses the same default user spec root as SpecLibraryService
-    // above; one root at v0 (multi-root expansion deferred to a later slice
-    // when spec library hooks its full root list through to discovery).
+    // Plugin reverse usage must cover the same built-in, user, and legacy roots as the spec library.
     // bug-fix slice plugin-discovery-respects-openrig-home: route the
     // openrigPluginsDir through the OPENRIG_HOME-aware resolver so
     // discovery + vendor (which already uses the helper at line 428)
@@ -1272,7 +1270,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       openrigPluginsDir: getDefaultOpenRigPath("plugins"),
       claudeCacheDir: nodePath.join(os.homedir(), ".claude", "plugins", "cache"),
       codexCacheDir: nodePath.join(os.homedir(), ".codex", "plugins", "cache"),
-      specLibraryDir: getDefaultOpenRigPath("specs"),
+      specLibraryDir: userSpecLibraryRoot,
+      additionalSpecLibraryDirs: [
+        nodePath.resolve(import.meta.dirname, "../specs"),
+        compatibleSpecLibraryRoot,
+      ],
     }),
     // Slice 28 Checkpoint C-3 — skillLibraryDiscoveryService is constructed
     // AFTER filesAllowlist resolution below (deps.skillLibraryDiscoveryService
