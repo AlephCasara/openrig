@@ -79,6 +79,19 @@ never silently clipped. Shorten the brief or related detail as directed. Inspect
 the failed row, then deliberately cancel/replace the authored request if its
 content needs correction; a timeout alone is never a reason to replace it.
 
+A follow-up **update** about earlier work ("the change you approved is merged")
+can post into that item's thread with `--reply-to <earlier-qitem-id>`. It is
+accepted only with `--human-intent update`. Name the item whose thread the
+human saw, such as the parked row, and create the update on the same host as
+that item. Send the update from the seat that owns that thread: the seat that
+parked the row, or the author of the earlier item. A human reply in a thread
+reaches its owning seat, so an update from any other seat posts as a new
+message. It also posts as a new message, rather than being refused, if the
+earlier thread is missing or closed, or while the earlier item still waits on
+the human (a pending human decision, or a row parked on the human), since a
+reply in that thread would answer the decision. In every such case the
+`--verify` result says `threaded: false` with the reason.
+
 If an existing agent-owned row must wait for a **decision**, block it on the **new live qitem ID**
 (`rig queue block <work-id> --on <human-qitem-id> ...`), not on the human address.
 Completion of the human qitem resumes its dependants. Blocking on the human as
