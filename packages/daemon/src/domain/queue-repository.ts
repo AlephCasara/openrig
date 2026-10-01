@@ -3427,11 +3427,29 @@ export class QueueRepository {
   /** Null means legacy/no OWNER history; inactive means OWNER history exists
    *  but the row no longer projects a current human-notification episode. */
   private currentDeliveryEpisode(item: QueueItem): { notificationKey: string; startedAt: string } | "inactive" | null {
-    const transition = this.transitionLog.latestOwnerNotificationForQitem(item.qitemId);
+    let transition = this.transitionLog.latestOwnerNotificationForQitem(item.qitemId);
     if (!transition) return null;
+    // A human-decision-resolved notice written BY the transition that closed the row (a human's direct reply closing
+    // it) is never posted: the Slack outbound lists active rows only (listHumanAlerts), and that human just answered.
+    // It opens no new delivery episode; the delivery that happened is the latest OUTBOUND notice's, to that human.
+    // Judged by the notice's own transition, not the row's current state: a resolved notice written while the row
+    // stayed active is a real delivery and keeps its outcome after an agent later closes the row.
+    let resolvedBy: string | null = null;
+    if (transition.ownerNotificationKind === "human-decision-resolved" && !["pending", "in-progress", "blocked"].includes(transition.state)) {
+      const outbound = this.transitionLog.listForQitem(item.qitemId)
+        .filter((t) => t.ownerNotificationLevel != null && t.ownerNotificationKind != null && t.ownerNotificationKind !== "human-decision-resolved")
+        .sort((a, b) => b.transitionId - a.transitionId)[0];
+      if (!outbound) return "inactive";
+      resolvedBy = transition.actorSession;
+      transition = outbound;
+    }
     const registry = this.loadHumanRegistryFn();
     if (!registry.ok) return "inactive";
-    const humanAddress = transition.ownerNotificationKind === "human-decision-resolved"
+    // After that fallback the recipient is the human who answered: the row may be an agent's that was parked on them
+    // (its destination is the agent, and closing cleared blocked_on).
+    const humanAddress = resolvedBy !== null
+      ? resolveRegisteredHumanAddress(resolvedBy, registry.entities)
+      : transition.ownerNotificationKind === "human-decision-resolved"
       ? resolveRegisteredHumanAddress(transition.actorSession, registry.entities)
       : item.state === "blocked"
         ? resolveRegisteredHumanAddress(item.blockedOn, registry.entities)
