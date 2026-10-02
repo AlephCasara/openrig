@@ -58,6 +58,9 @@ function resolveTerminalToken(): string | null {
 }
 
 export class DaemonConnectionError extends Error {
+  /** A write caller cannot infer nondelivery from losing the response. */
+  writeOutcome?: "unknown";
+
   constructor(message: string) {
     super(message);
     this.name = "DaemonConnectionError";
