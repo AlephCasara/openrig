@@ -75,13 +75,15 @@ export function launchExecutable(name: string, searchPath: string, cwd: string):
 
 /** Reassert only public seat metadata after shell startup. Session identity is
  * read from tmux's launch environment; a successor's reserved identity wins.
- * Neither credentials nor user/runtime config variables enter the command.
+ * Credentials stay in the inherited channel. An explicitly selected Codex home
+ * is reasserted for Codex only; an unset selection retains the pane's defaults.
  */
 export class SeatLaunchEnvironment {
   constructor(private readonly tmux: TmuxAdapter,
     private readonly sessionEnv: Readonly<Record<string, string | undefined>>,
     private readonly daemonCwd: string,
-    private readonly cliPath?: string) {}
+    private readonly cliPath?: string,
+    private readonly codexHome?: string) {}
 
   private rigBin(): string {
     const cli = realpathSync(this.cliPath ?? pairedCli());
@@ -100,7 +102,10 @@ export class SeatLaunchEnvironment {
 
   async command(session: string, command: string, target: { codexCwd?: string; nodeId?: string; generation?: string; runtime?: string } = {}): Promise<string> {
     const searchPath = this.sessionEnv.PATH;
-    const fallback = target.codexCwd !== undefined && searchPath ? `env PATH=${shellQuote(searchPath)} ${command}` : command;
+    const codexEnv = target.codexCwd !== undefined
+      ? [searchPath ? `PATH=${shellQuote(searchPath)}` : "", this.codexHome ? `CODEX_HOME=${shellQuote(this.codexHome)}` : ""].filter(Boolean)
+      : [];
+    const fallback = codexEnv.length ? `env ${codexEnv.join(" ")} ${command}` : command;
     try {
       // Nushell does not expand "$PATH". Keep its pre-existing literal command.
       const shell = path.basename(await this.tmux.getPaneCommand(session) ?? "").replace(/^-/, "");
@@ -127,6 +132,7 @@ export class SeatLaunchEnvironment {
       }
       const binDir = this.rigBin();
       const env = publicSeatEnvironment({ OPENRIG_TRANSCRIPTS_LINES: "", OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS: "", ...this.sessionEnv, ...identity });
+      if (target.codexCwd !== undefined && this.codexHome) env.CODEX_HOME = this.codexHome;
       // Classic Claude may be an rc alias or function, not a PATH executable.
       // Its caller sources the staged command in a pane-shell subshell. Leading
       // assignments preserve shell lookup; /usr/bin/env would bypass it.

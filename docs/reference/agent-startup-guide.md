@@ -257,7 +257,7 @@ OpenRig performs best-effort deterministic runtime configuration for managed ses
   Purpose: apply context collector/activity hooks and selected `claude_settings_fragment` resources inside the project without committing them to git.
 - Claude project-local MCP config: `.mcp.json`
   Purpose: apply selected `claude_mcp_fragment` resources for Claude in that project.
-- Codex global config: `~/.codex/config.toml`
+- Codex global config: `$CODEX_HOME/config.toml`, or `~/.codex/config.toml` when unset
   Purpose: pre-trust managed workspaces and apply selected `codex_config_fragment` resources. Codex currently has no equivalent project-local MCP config path for global profile settings.
 
 Two important caveats:
@@ -268,6 +268,39 @@ Permission mode and runtime resource projection are separate. A selected fragmen
 can affect native configuration, but OpenRig's launch flags can override those
 values. Recording a config-surface `permission_policy` is not proof that its
 rules were translated or applied. See [permission precedence and limits](getting-started.md#custom-settings-and-precedence).
+
+### Separate Codex homes for separate installations
+
+Set an **absolute `CODEX_HOME` in the environment that starts the daemon** when
+you want a separate Codex configuration and state root. OpenRig uses that root
+for its startup hook setup/removal and trust records, feature flag, workspace
+trust and selected config fragments. Startup can write those files even when
+the daemon has no seats.
+
+The explicit selection also applies to future managed Codex fresh, resume and
+fork launches, their capability/profile/configuration probes, native thread and
+context reads, and plugin-cache discovery. Launch commands reassert it after
+pane shell startup, so an rc file cannot silently switch that launch to another
+Codex home. Executable and PATH selection stay the same. Existing running
+sessions are not moved or restarted; a thread in another home is not searched
+as a fallback for an explicitly selected home.
+
+**With `CODEX_HOME` unset, a second install still shares `~/.codex`.** Setting only
+`OPENRIG_HOME` separates OpenRig state, not provider configuration. The default
+launch behavior is unchanged, including existing pane-shell overrides.
+
+OpenRig does not copy or migrate authentication, history, rules, trust or
+settings into the selected home. A separate file-backed home needs its intended
+authentication provisioned if absent; OS credential stores and other config
+layers can behave differently, so a new login is not universally required.
+Explicit Codex auth commands resolve their **caller's** `CODEX_HOME`, otherwise
+`$HOME/.codex`; contacting a daemon with `OPENRIG_URL` does not retarget auth
+save/switch/registry writes to that daemon's selection. Set the intended root
+on those commands as well.
+
+This separates provider files, not OS users or accounts. Project-local resources
+still use the selected project directory; shared project and system settings
+remain shared.
 
 ### Runtime Differences
 

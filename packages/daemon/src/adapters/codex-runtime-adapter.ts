@@ -77,7 +77,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // (defaultProfilePreflight, module-private); tests inject a controlled probe
   // so no real codex subprocess runs. Contract not weakened — production uses
   // the real probe by default.
-  private verifyProfilePreflight: (profile: string) => Promise<CodexProfileProbeResult>;
+  private verifyProfilePreflight: (profile: string, cwd: string) => Promise<CodexProfileProbeResult>;
   // #69: whether the installed Codex supports --no-daemon. Startup wires the real probe;
   // absent (unit tests, other embedders) keeps the existing invocation unchanged.
   private detectDaemonSupport?: CodexDaemonSupportDetector;
@@ -102,6 +102,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     resolveHomeDirByPid?: ResolveHomeDirByPid;
     sleep?: (ms: number) => Promise<void>;
     activityRelayPath?: string;
+    /** Explicit CODEX_HOME; absent preserves the legacy OS/PID home behavior. */
     codexHome?: string;
     /** Match the daemon's prerequisite probe even if the pane's login shell rewrites PATH. */
     launchPath?: string;
@@ -123,7 +124,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.readThreadIdByPid = deps.readThreadIdByPid ?? ((pid) => this.readThreadIdFromLogs(pid));
     this.resolveHomeDirByPid = deps.resolveHomeDirByPid ?? defaultResolveHomeDirByPid;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    this.verifyProfilePreflight = deps.verifyProfilePreflight ?? defaultProfilePreflight;
+    this.verifyProfilePreflight = deps.verifyProfilePreflight
+      ?? ((profile, cwd) => defaultProfilePreflight(profile, this.codexHome ? { cwd, codexHome: this.codexHome, launchPath: this.launchPath } : undefined));
   }
 
   /**
@@ -357,7 +359,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // `codex -p <profile> resume` failure. An absent .config.toml passes
     // (Codex default-layers it; advisor Option B).
     if (profile) {
-      const probeResult = await this.verifyProfilePreflight(profile);
+      const probeResult = await this.verifyProfilePreflight(profile, binding.cwd);
       if (!probeResult.ok) {
         return {
           ok: false,
@@ -398,7 +400,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       const cmd = `codex${daemonArg}${postureArg}${networkArg}${modelArg}${effortArg} fork${queueStateDirArg} ${shellQuote(parentId)}`;
       const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment
         ? await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { codexCwd: binding.cwd, nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime })
-        : this.launchPath ? `env PATH=${shellQuote(this.launchPath)} ${cmd}` : cmd);
+        : this.launchCommand(cmd));
       if (!textResult.ok) {
         return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
       }
@@ -430,7 +432,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
     const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment
         ? await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { codexCwd: binding.cwd, nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime })
-        : this.launchPath ? `env PATH=${shellQuote(this.launchPath)} ${cmd}` : cmd);
+        : this.launchCommand(cmd));
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
     }
@@ -894,9 +896,15 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private async readThreadIdFromLogs(pid: number): Promise<string | undefined> {
     return readCodexThreadIdFromCandidateHomes(
       pid,
-      [await this.resolveHomeDirByPid(pid), this.fs.homedir, os.homedir()],
-      (path) => this.fs.exists(path)
+      this.codexHome ? [] : [await this.resolveHomeDirByPid(pid), this.fs.homedir, os.homedir()],
+      (path) => this.fs.exists(path),
+      this.codexHome,
     );
+  }
+
+  private launchCommand(command: string): string {
+    const env = [this.launchPath ? `PATH=${shellQuote(this.launchPath)}` : "", this.codexHome ? `CODEX_HOME=${shellQuote(this.codexHome)}` : ""].filter(Boolean);
+    return env.length ? `env ${env.join(" ")} ${command}` : command;
   }
 }
 
@@ -1483,14 +1491,16 @@ function escapeRegExp(value: string): string {
 // production, execFn runs the real `codex -p <profile> mcp list` via execSync
 // (utf-8, piped stdio, 10s timeout). Injected as the adapter's default
 // verifyProfilePreflight; tests substitute a controlled stub.
-async function defaultProfilePreflight(profile: string): Promise<CodexProfileProbeResult> {
+async function defaultProfilePreflight(profile: string, selected?: { cwd: string; codexHome: string; launchPath?: string }): Promise<CodexProfileProbeResult> {
   const { verifyCodexProfileLoads } = await import("../domain/codex-profile-preflight.js");
   const { execSync } = await import("node:child_process");
   const execFn = async (cmd: string) =>
     runSyncSite("codex.runtime.profile_preflight", () =>
-      execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 })
+      execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000,
+        ...(selected ? { cwd: selected.cwd, env: { ...process.env, CODEX_HOME: selected.codexHome, ...(selected.launchPath ? { PATH: selected.launchPath } : {}) } } : {}),
+      })
     );
-  return verifyCodexProfileLoads(profile, execFn);
+  return verifyCodexProfileLoads(profile, execFn, undefined, selected?.codexHome);
 }
 
 // Exported for unit test (B12-T): the REAL async sampling path — the anti-vacuity test drives

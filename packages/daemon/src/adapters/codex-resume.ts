@@ -18,6 +18,7 @@ export { type ResumeResult };
 interface CodexResumeOptions {
   seatLaunchEnvironment?: SeatLaunchEnvironment;
   launchPath?: string;
+  codexHome?: string;
   pollMs?: number;
   maxWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -67,10 +68,12 @@ export class CodexResumeAdapter {
       const execFn = this.options.exec ?? (async (cmd: string) => {
         const { execSync } = await import("node:child_process");
         return runSyncSite("codex.resume.profile_preflight", () =>
-          execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 })
+          execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000,
+            ...(this.options.codexHome ? { cwd, env: { ...process.env, CODEX_HOME: this.options.codexHome, ...(this.options.launchPath ? { PATH: this.options.launchPath } : {}) } } : {}),
+          })
         );
       });
-      const probeResult = await verifyCodexProfileLoads(codexConfigProfile, execFn);
+      const probeResult = await verifyCodexProfileLoads(codexConfigProfile, execFn, undefined, this.options.codexHome);
       if (!probeResult.ok) {
         return {
           ok: false,
@@ -102,9 +105,10 @@ export class CodexResumeAdapter {
       effort,
     );
 
+    const launchEnv = [this.options.launchPath ? `PATH=${shellQuote(this.options.launchPath)}` : "", this.options.codexHome ? `CODEX_HOME=${shellQuote(this.options.codexHome)}` : ""].filter(Boolean);
     const textResult = await this.tmux.sendShellCommand(tmuxSessionName, this.options.seatLaunchEnvironment
       ? await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { codexCwd: cwd, runtime: "codex" })
-      : this.options.launchPath ? `env PATH=${shellQuote(this.options.launchPath)} ${cmd}` : cmd);
+      : launchEnv.length ? `env ${launchEnv.join(" ")} ${cmd}` : cmd);
     if (!textResult.ok) {
       return { ok: false, code: "resume_failed", message: textResult.message };
     }
