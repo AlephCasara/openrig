@@ -677,7 +677,7 @@ export class StartupOrchestrator {
     }
 
     await this.sleep(200);
-    const submitResult = await this.tmuxAdapter.sendKeys(tmuxSession, ["C-m"]);
+    const submitResult = await this.tmuxAdapter.sendKeys(tmuxSession, ["Enter"]);
     if (!submitResult.ok) {
       return (submitResult as { message?: string }).message ?? "unknown";
     }

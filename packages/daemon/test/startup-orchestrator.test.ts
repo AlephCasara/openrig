@@ -495,7 +495,7 @@ describe("StartupOrchestrator", () => {
 
     expect(result.ok).toBe(true);
     expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "/rename impl");
-    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-impl", ["C-m"]);
+    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-impl", ["Enter"]);
   });
 
   // T8: operator debug append executes after resolved startup
