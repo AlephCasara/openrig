@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { inspectStartupStagedText, startupSubmissionEvidence, type StartupSubmissionEvidence } from "./startup-submission-evidence.js";
+export { inspectStartupStagedText } from "./startup-submission-evidence.js";
 import { OutboxHandler } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
@@ -463,32 +465,6 @@ export type ResolveResult =
   | { ok: true; sessions: Array<{ sessionName: string; rigName: string; nodeLogicalId: string }> }
   | { ok: false; code: "not_found" | "ambiguous"; error: string };
 
-/** Startup retries need the whole visible message, not the identity header shared by
- * every startup. An echoed turn or a partial/opaque composer stays unverified. */
-export function inspectStartupStagedText(pane: string | null, expected: string): "staged" | "clear" | "unverified" {
-  const lines = (pane ?? "").split("\n");
-  let inputAt = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]!.trimStart().startsWith("❯")) { inputAt = i; break; }
-  }
-  if (inputAt < 0) return "unverified";
-  // Prompt text can itself contain rules (the startup challenge does). A rule
-  // closes the composer only when followed by recognized composer chrome.
-  let end = -1;
-  for (let i = lines.length - 1; i > inputAt; i--) {
-    if (/^[─═-]{10,}$/.test(lines[i]!.trim())
-      && /(?:shift\+tab to cycle|\? for shortcuts)/i.test(lines.slice(i + 1).find((next) => next.trim()) ?? "")) {
-      end = i;
-      break;
-    }
-  }
-  if (end < 0 || /^❯\s*\d+\./.test(lines[inputAt]!.trimStart())) return "unverified";
-  const norm = (text: string) => text.replace(/\s+/g, "");
-  const body = norm(lines.slice(inputAt, end).join("\n").trimStart().slice(1));
-  if (!body) return "clear";
-  return body === norm(expected) ? "staged" : "unverified";
-}
-
 /** The existing submit-only identity check, also used to inspect startup's own paste.
  * A false result is no matching staged evidence, not proof of model consumption. */
 export function hasExpectedStagedText(pane: string | null, expected: string): boolean {
@@ -608,6 +584,8 @@ export interface SendOpts {
   submitOnlyCaptureLines?: 50 | 200;
   /** Internal startup only: require complete visible composer identity before Enter. */
   requireFullStagedText?: boolean;
+  /** Internal, synchronous diagnostics sink. Exceptions never affect transport. */
+  onStartupMismatch?: (evidence: StartupSubmissionEvidence) => void;
   /** Round-2 (r2 HIGH-1): the walked piece's own line count — placeholder identity. A large paste
    *  renders as "[Pasted text #N +X lines]"; X must match this count for the placeholder to count
    *  as evidence of THIS piece. */
@@ -1234,14 +1212,28 @@ export class SessionTransport {
       if (expected.trim().length === 0) {
         return { ok: false, sessionName, reason: "invalid_submit_only", error: "submitOnly requires expectedStagedText — the Enter is only pressed onto the exact staged content." };
       }
-      const pane = await this.runStage(
-        "session_transport.submit_only_precheck",
-        () => this.tmuxAdapter.capturePaneContent(sessionName, opts.submitOnlyCaptureLines ?? 50),
-      );
+      const recordMismatch = (pane: string | null): void => {
+        if (!opts.requireFullStagedText || !opts.onStartupMismatch) return;
+        try {
+          const evidence = startupSubmissionEvidence(pane, expected, opts.submitOnlyCaptureLines ?? 50);
+          if (evidence) opts.onStartupMismatch(evidence);
+        } catch { /* Observation has no delivery authority. */ }
+      };
+      let pane: string | null;
+      try {
+        pane = await this.runStage(
+          "session_transport.submit_only_precheck",
+          () => this.tmuxAdapter.capturePaneContent(sessionName, opts.submitOnlyCaptureLines ?? 50),
+        );
+      } catch (error) {
+        recordMismatch(null);
+        throw error; // Preserve the existing guarded/unguarded error handling.
+      }
       const staged = opts.requireFullStagedText
         ? inspectStartupStagedText(pane, expected) === "staged"
         : hasExpectedStagedText(pane, expected);
       if (!staged) {
+        recordMismatch(pane);
         return {
           ok: false,
           sessionName,

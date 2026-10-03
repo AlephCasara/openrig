@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -6,13 +7,18 @@ import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js"
 import { seatDeliveryGuardSchema } from "../src/db/migrations/087_seat_delivery_guard.js";
 import { SeatDeliveryGuard } from "../src/domain/seat-delivery-guard.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
+import { SessionTransport } from "../src/domain/session-transport.js";
+import { startupSubmissionEvidence } from "../src/domain/startup-submission-evidence.js";
+import { StartupOrchestrator, type StartupInput } from "../src/domain/startup-orchestrator.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
+// A mockable wrapper is needed because native ESM namespace exports are immutable.
+vi.mock("node:crypto", async (importOriginal) => ({ ...await importOriginal<typeof import("node:crypto")>() }));
+
 describe("startup prompt submission", () => {
   const dbs: ReturnType<typeof createFullTestDb>[] = [];
-  afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
+  afterEach(() => { vi.restoreAllMocks(); for (const db of dbs.splice(0)) db.close(); });
 
   function fixture(lostEnters: number, runtime = "claude-code", challengeOnly = false) {
     const db = createFullTestDb(); dbs.push(db); db.exec(outboxEntriesSchema.sql); db.exec(seatDeliveryGuardSchema.sql);
@@ -50,13 +56,13 @@ describe("startup prompt submission", () => {
     const role = Array.from({ length: 100 }, (_, i) => `Startup instruction ${i}: read the assigned project source.`).join("\n");
     const orch = new StartupOrchestrator({ db, sessionRegistry: registry, eventBus,
       tmuxAdapter: tmux as unknown as TmuxAdapter, readFile: () => role, sleep: async () => {} });
-    const start = () => orch.startNode({ rigId: rig.id, nodeId: node.id, sessionId: session.id,
+    const start = (overrides: Partial<StartupInput> = {}) => orch.startNode({ rigId: rig.id, nodeId: node.id, sessionId: session.id,
       binding: { id: "binding", nodeId: node.id, tmuxSession: name, tmuxPane: "%1", tmuxWindow: null,
         cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/fixture" },
       adapter, plan: { runtime: "claude-code", cwd: "/fixture", entries: [], startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },
       resolvedStartupFiles: challengeOnly ? [] : [{ path: "role.md", absolutePath: "/fixture/role.md", ownerRoot: "/fixture", deliveryHint: "send_text", required: true, appliesOn: ["fresh_start"] }],
       startupActions: challengeOnly ? [{ type: "startup_proof", value: "authenticated", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true }] : [{ type: "send_text", builtin: "session_identity", value: "OpenRig session identity: worker@startup-submit", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true }],
-      isRestore: false,
+      isRestore: false, ...overrides,
     });
     return { db, session, tmux, submitted, start, composer: () => composer };
   }
@@ -68,6 +74,8 @@ describe("startup prompt submission", () => {
     expect(f.tmux.sendKeys).toHaveBeenCalledTimes(2);
     expect(f.submitted).toEqual([f.tmux.sendText.mock.calls[0]![1]]);
     expect(f.composer()).toBe("");
+    const event = f.db.prepare("SELECT payload FROM events WHERE type = 'node.startup_ready'").get() as { payload: string };
+    expect(JSON.parse(event.payload).submission).toBeUndefined();
   });
 
   it("does not retry a normal submission", async () => {
@@ -109,7 +117,8 @@ describe("startup prompt submission", () => {
     f.tmux.capturePaneContent.mockResolvedValue(pane);
     expect(await f.start()).toMatchObject({ ok: true, submission: { status: "unverified", reasons: [expect.stringContaining("capture is unavailable")] } });
     const event = f.db.prepare("SELECT payload FROM events WHERE type = 'node.startup_ready' ORDER BY seq DESC LIMIT 1").get() as { payload: string };
-    expect(JSON.parse(event.payload).submission).toEqual({ status: "unverified", reasons: [expect.stringContaining("capture is unavailable")] });
+    expect(JSON.parse(event.payload).submission).toMatchObject({ status: "unverified", reasons: [expect.stringContaining("capture is unavailable")],
+      diagnostics: [{ retry: "not_run", observations: [{ phase: "initial", observed: null, firstDifferenceByte: null }] }] });
     expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
   });
 
@@ -178,4 +187,131 @@ describe("startup prompt submission", () => {
     expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
     expect(f.tmux.capturePaneContent).not.toHaveBeenCalled();
   });
+
+  const screen = (body: string) => `Previous turn\n❯ ${body}\n────────────────────\n? for shortcuts`;
+  const digest = (text: string) => ({ bytes: Buffer.byteLength(text), sha256: crypto.createHash("sha256").update(text).digest("hex") });
+
+  it("persists exact synthetic mismatch evidence without another Enter or capture", async () => {
+    const f = fixture(Infinity);
+    f.tmux.capturePaneContent.mockResolvedValue(screen("X ä\n b"));
+    const result = await f.start();
+    const event = f.db.prepare("SELECT payload FROM events WHERE type = 'node.startup_ready'").get() as { payload: string };
+    const submission = JSON.parse(event.payload).submission;
+    expect(result).toMatchObject({ ok: true, submission });
+    expect(submission.diagnostics).toEqual([{
+      startupAttemptId: expect.stringMatching(/^[0-9a-f-]{36}$/), sendOrder: 1, source: "initial_identity", retry: "not_run",
+      observations: [{ phase: "initial", normalization: "whitespace-stripped-utf8",
+        expected: digest(f.tmux.sendText.mock.calls[0]![1].replace(/\s+/g, "")), observed: digest("Xäb"),
+        firstDifferenceByte: 0, markerLine: 2, closingRuleLine: 4, capturedLines: 5,
+        captureScrollbackLines: 200, windowsOmitted: "unclassified-startup-text" }],
+    }]);
+    expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(1);
+    expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+    expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the guarded recheck mismatch even if the final composer is clear", async () => {
+    const f = fixture(Infinity);
+    const capture = f.tmux.capturePaneContent.getMockImplementation()!;
+    f.tmux.capturePaneContent.mockImplementationOnce(capture)
+      .mockResolvedValueOnce(screen("different text")).mockResolvedValueOnce(screen(""));
+    expect(await f.start()).toMatchObject({ ok: true, submission: { diagnostics: [{
+      retry: "refused_or_failed", observations: [{ phase: "guarded_retry", observed: digest("differenttext") }],
+    }] } });
+    expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(3);
+    expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+  });
+
+  it("distinguishes retry transport success from an unavailable final observation", async () => {
+    const f = fixture(1);
+    const capture = f.tmux.capturePaneContent.getMockImplementation()!;
+    f.tmux.capturePaneContent.mockImplementationOnce(capture).mockImplementationOnce(capture).mockResolvedValueOnce(null);
+    expect(await f.start()).toMatchObject({ ok: true, submission: { status: "unverified", diagnostics: [{
+      retry: "ok", observations: [{ phase: "after_retry", observed: null }],
+    }] } });
+    expect(f.tmux.sendKeys).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains a thrown precheck when the delivery guard converts it to a failure", async () => {
+    const f = fixture(Infinity);
+    const capture = f.tmux.capturePaneContent.getMockImplementation()!;
+    f.tmux.capturePaneContent.mockImplementationOnce(capture).mockRejectedValueOnce(new Error("unavailable"));
+    expect(await f.start()).toMatchObject({ ok: true, submission: { diagnostics: [{
+      retry: "refused_or_failed", observations: [{ phase: "guarded_retry", observed: null }],
+    }] } });
+    expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+  });
+
+  it("identifies sequential sends and omits credential-capable text from every diagnostic", async () => {
+    const f = fixture(Infinity);
+    const secret = "synthetic-private-credential-do-not-record";
+    f.tmux.capturePaneContent.mockResolvedValue(screen(`other ${secret}`));
+    const actions: StartupInput["startupActions"] = [
+      { type: "send_text", value: `OpenRig session identity: ${secret}`, builtin: "session_identity", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true },
+      { type: "send_text", value: `after files ${secret}`, phase: "after_files", appliesOn: ["fresh_start"], idempotent: true },
+      { type: "send_text", value: `after ready ${secret}`, phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true },
+    ];
+    const result = await f.start({ startupActions: actions });
+    if (!result.ok) throw new Error("fixture did not start");
+    const diagnostics = result.submission!.diagnostics!;
+    expect(diagnostics.map(({ sendOrder, source, actionIndex }) => ({ sendOrder, source, actionIndex }))).toEqual([
+      { sendOrder: 1, source: "initial_identity", actionIndex: undefined },
+      { sendOrder: 2, source: "after_files", actionIndex: 1 },
+      { sendOrder: 3, source: "after_ready", actionIndex: 2 },
+    ]);
+    expect(new Set(diagnostics.map(d => d.startupAttemptId)).size).toBe(1);
+    expect(JSON.stringify(diagnostics)).not.toContain(secret);
+    expect(diagnostics.every(d => d.observations.every(o => o.windowsOmitted === "unclassified-startup-text"))).toBe(true);
+    expect(f.tmux.sendKeys).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains earlier evidence if a later action fails startup", async () => {
+    const f = fixture(Infinity);
+    f.tmux.capturePaneContent.mockResolvedValue(null);
+    const send = f.tmux.sendText.getMockImplementation()!;
+    f.tmux.sendText.mockImplementationOnce(send).mockRejectedValueOnce(new Error("later action failed"));
+    const actions: StartupInput["startupActions"] = [
+      { type: "send_text", value: "OpenRig session identity: fixture", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true },
+      { type: "send_text", value: "later", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true },
+    ];
+    expect(await f.start({ startupActions: actions })).toMatchObject({ ok: false, startupStatus: "failed" });
+    const event = f.db.prepare("SELECT payload FROM events WHERE type = 'node.startup_failed'").get() as { payload: string };
+    expect(JSON.parse(event.payload).submissionDiagnostics).toMatchObject([{ sendOrder: 1, retry: "not_run", observations: [{ observed: null }] }]);
+  });
+
+  it("keeps diagnostics bounded for a large synthetic prompt and uses UTF-8 byte offsets", () => {
+    const body = "ä" + "x".repeat(200_000);
+    const evidence = startupSubmissionEvidence(screen(body), "äy" + "x".repeat(200_000), 200)!;
+    expect(evidence.firstDifferenceByte).toBe(2);
+    expect(evidence.observed).toEqual(digest(body));
+    expect(evidence.expected.bytes).toBe(200_003);
+    expect(JSON.stringify(evidence).length).toBeLessThan(700);
+    expect(JSON.stringify(evidence)).not.toContain("xxxxx");
+    expect(startupSubmissionEvidence("❯ 1. Continue\n────────────────────\n? for shortcuts", "1. Continue", 200)?.observed).toBeNull();
+  });
+
+  it("ignores a failing diagnostic sink without changing the guard verdict", async () => {
+    const f = fixture(Infinity);
+    f.tmux.capturePaneContent.mockResolvedValue(screen("different composer"));
+    const sink = vi.fn(() => { throw new Error("diagnostic sink unavailable"); });
+    const transport = new SessionTransport({ db: f.db, rigRepo: new RigRepository(f.db),
+      sessionRegistry: new SessionRegistry(f.db), eventBus: new EventBus(f.db), tmuxAdapter: f.tmux as unknown as TmuxAdapter });
+    expect(await transport.send("worker@startup-submit", "", {
+      submitOnly: true, requireFullStagedText: true, expectedStagedText: "original composer", onStartupMismatch: sink,
+    })).toMatchObject({ ok: false, reason: "staged_mismatch" });
+    expect(sink).toHaveBeenCalledTimes(1);
+    expect(f.tmux.sendText).not.toHaveBeenCalled();
+    expect(f.tmux.sendKeys).not.toHaveBeenCalled();
+    expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not change the delivery verdict when diagnostic hashing fails", async () => {
+    const f = fixture(Infinity);
+    f.tmux.capturePaneContent.mockResolvedValue(screen("different composer"));
+    vi.spyOn(crypto, "createHash").mockImplementation(() => { throw new Error("diagnostic failure"); });
+    expect(await f.start()).toMatchObject({ ok: true, startupStatus: "ready", submission: { status: "unverified" } });
+    expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+    expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(1);
+  });
+
 });
