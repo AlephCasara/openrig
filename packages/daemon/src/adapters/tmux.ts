@@ -216,6 +216,18 @@ function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, "'\"'\"'") + "'";
 }
 
+/**
+ * An exact tmux target for a session name. tmux resolves a bare name by prefix when no session has that exact name,
+ * so a read or pipe for a session that just ended would act on another (`dev-impl@my-rig` on `dev-impl@my-rig2`).
+ * Pane, window and session ids (`%3`, `@1`, `$2`) and `session:window.pane` targets pass through unchanged (tmux
+ * turns `:` in a session name into `_`, so a `:` always means an explicit target). A pane or window command gets
+ * `=name:` (as the batched capture uses); a session command gets `=name`.
+ */
+function exactTarget(target: string, kind: "pane" | "window" | "session"): string {
+  if (/^[%@$]\d+$/.test(target) || target.includes(":")) return target;
+  return kind === "session" ? `=${target}` : `=${target}:`;
+}
+
 /** Elements safe to leave bare in a POSIX shell word list. */
 const SHELL_SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
@@ -694,9 +706,10 @@ export class TmuxAdapter {
   }
 
   async setWindowOption(target: string, option: string, value: string): Promise<TmuxResult> {
+    const window = exactTarget(target, "window");
     try {
-      await this.run(["tmux", "set-option", "-w", "-t", target, option, value],
-        `tmux set-option -w -t ${shellQuote(target)} ${shellQuote(option)} ${shellQuote(value)}`);
+      await this.run(["tmux", "set-option", "-w", "-t", window, option, value],
+        `tmux set-option -w -t ${shellQuote(window)} ${shellQuote(option)} ${shellQuote(value)}`);
       return { ok: true };
     } catch (err) {
       return classifyWriteError(err);
@@ -711,7 +724,7 @@ export class TmuxAdapter {
       return { ok: false, code: "validation_error", message: `resizeWindow: rows must be a positive integer, got ${rows}` };
     }
     try {
-      await this.run(["tmux", "resize-window", "-t", target, "-x", String(cols), "-y", String(rows)]);
+      await this.run(["tmux", "resize-window", "-t", exactTarget(target, "window"), "-x", String(cols), "-y", String(rows)]);
       return { ok: true };
     } catch (err) {
       return classifyWriteError(err);
@@ -737,18 +750,20 @@ export class TmuxAdapter {
   }
 
   private async killSessionUnchecked(name: string): Promise<TmuxResult> {
+    // The guarded path passes the immutable `$N` id, which stays as it is; a bare name is made exact.
+    const session = exactTarget(name, "session");
     // Detach first so `detach-on-destroy off` cannot switch views onto another session.
     try {
-      await this.run(["tmux", "detach-client", "-s", name],
-        `tmux detach-client -s ${shellQuote(name)}`);
+      await this.run(["tmux", "detach-client", "-s", session],
+        `tmux detach-client -s ${shellQuote(session)}`);
     } catch (err) {
       // tmux 3.7 says "no current client" when nothing is attached (and for a missing session, which the kill classifies).
       const message = err instanceof Error ? err.message : String(err);
       if (!message.toLowerCase().includes("no current client")) return classifyWriteError(err);
     }
     try {
-      await this.run(["tmux", "kill-session", "-t", name],
-        `tmux kill-session -t ${shellQuote(name)}`);
+      await this.run(["tmux", "kill-session", "-t", session],
+        `tmux kill-session -t ${shellQuote(session)}`);
       const pane = this.freshProbes.get(name);
       this.freshProbes.delete(name);
       if (pane) this.freshProbes.delete(pane);
@@ -853,9 +868,10 @@ export class TmuxAdapter {
 
   /** Get the PID of the foreground process in a pane. Returns null if unavailable. */
   async getPanePid(paneId: string): Promise<number | null> {
+    const target = exactTarget(paneId, "pane");
     try {
-      const output = await this.run(["tmux", "display-message", "-p", "-t", paneId, "#{pane_pid}"],
-        `tmux display-message -p -t ${shellQuote(paneId)} "#{pane_pid}"`);
+      const output = await this.run(["tmux", "display-message", "-p", "-t", target, "#{pane_pid}"],
+        `tmux display-message -p -t ${shellQuote(target)} "#{pane_pid}"`);
       const trimmed = output.trim();
       const parsed = parseInt(trimmed, 10);
       return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -879,9 +895,10 @@ export class TmuxAdapter {
 
   /** Get the current foreground command in a pane. Returns null if unavailable. */
   async getPaneCommand(paneId: string): Promise<string | null> {
+    const target = exactTarget(paneId, "pane");
     try {
-      const output = await this.run(["tmux", "display-message", "-p", "-t", paneId, "#{pane_current_command}"],
-        `tmux display-message -p -t ${shellQuote(paneId)} "#{pane_current_command}"`);
+      const output = await this.run(["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"],
+        `tmux display-message -p -t ${shellQuote(target)} "#{pane_current_command}"`);
       const trimmed = output.trim();
       return trimmed || null;
     } catch {
@@ -895,9 +912,10 @@ export class TmuxAdapter {
    *  distinguishes a genuinely absent var from `tmux show-environment <var>`'s
    *  nonzero lookup exit. */
   async hasSessionEnv(sessionName: string, varName: string): Promise<boolean | null> {
+    const target = exactTarget(sessionName, "session");
     try {
-      const output = await this.run(["tmux", "show-environment", "-t", sessionName],
-        `tmux show-environment -t ${shellQuote(sessionName)}`);
+      const output = await this.run(["tmux", "show-environment", "-t", target],
+        `tmux show-environment -t ${shellQuote(target)}`);
       const prefix = `${varName}=`;
       return output.split(/\r?\n/).some(
         (line) => line.startsWith(prefix) && line.slice(prefix.length).trim().length > 0,
@@ -916,9 +934,10 @@ export class TmuxAdapter {
     // shell, so its inner quoting stays POSIX here (psmux documents the same
     // `cat >` server-side form for its own path).
     const sink = "cat >> " + shellQuote(outputPath);
+    const target = exactTarget(sessionName, "pane");
     try {
-      await this.run(["tmux", "pipe-pane", "-t", sessionName, sink],
-        `tmux pipe-pane -t ${shellQuote(sessionName)} ${shellQuote(sink)}`);
+      await this.run(["tmux", "pipe-pane", "-t", target, sink],
+        `tmux pipe-pane -t ${shellQuote(target)} ${shellQuote(sink)}`);
       return { ok: true };
     } catch (err) {
       return classifyWriteError(err);
@@ -927,9 +946,10 @@ export class TmuxAdapter {
 
   /** Stop pipe-pane on a session. */
   async stopPipePane(sessionName: string): Promise<TmuxResult> {
+    const target = exactTarget(sessionName, "pane");
     try {
-      await this.run(["tmux", "pipe-pane", "-t", sessionName],
-        `tmux pipe-pane -t ${shellQuote(sessionName)}`);
+      await this.run(["tmux", "pipe-pane", "-t", target],
+        `tmux pipe-pane -t ${shellQuote(target)}`);
       return { ok: true };
     } catch (err) {
       return classifyWriteError(err);
@@ -1016,9 +1036,10 @@ export class TmuxAdapter {
   }
 
   async capturePaneContent(paneId: string, lines: number = 20): Promise<string | null> {
+    const target = exactTarget(paneId, "pane");
     try {
-      const output = await this.run(["tmux", "capture-pane", "-p", "-t", paneId, "-S", `-${lines}`],
-        `tmux capture-pane -p -t ${shellQuote(paneId)} -S -${lines}`);
+      const output = await this.run(["tmux", "capture-pane", "-p", "-t", target, "-S", `-${lines}`],
+        `tmux capture-pane -p -t ${shellQuote(target)} -S -${lines}`);
       return output || null;
     } catch {
       return null;
@@ -1032,9 +1053,10 @@ export class TmuxAdapter {
    * the absolute-paint seed exists to eliminate.
    */
   async capturePaneScreen(paneId: string): Promise<string | null> {
+    const target = exactTarget(paneId, "pane");
     try {
-      const output = await this.run(["tmux", "capture-pane", "-p", "-t", paneId],
-        `tmux capture-pane -p -t ${shellQuote(paneId)}`);
+      const output = await this.run(["tmux", "capture-pane", "-p", "-t", target],
+        `tmux capture-pane -p -t ${shellQuote(target)}`);
       return output || null;
     } catch {
       return null;

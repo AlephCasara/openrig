@@ -287,7 +287,7 @@ describe("TmuxAdapter", () => {
       expect(await adapter.hasSessionEnv("seat@rig", "OPENRIG_ACTIVITY_HOOK_TOKEN")).toBe(false);
       expect(await adapter.hasSessionEnv("seat@rig", "RIGGED_URL")).toBe(false);
       expect(await adapter.hasSessionEnv("seat@rig", "RIGGED_ACTIVITY_HOOK_TOKEN")).toBe(false);
-      expect(exec).toHaveBeenCalledWith("tmux show-environment -t 'seat@rig'");
+      expect(exec).toHaveBeenCalledWith("tmux show-environment -t '=seat@rig'");
     });
 
     it("returns unknown when the session environment cannot be inspected", async () => {
@@ -484,8 +484,8 @@ describe("TmuxAdapter", () => {
       await adapter.killSession("r01-dev1-impl");
 
       expect(exec.mock.calls.map((call) => call[0])).toEqual([
-        "tmux detach-client -s 'r01-dev1-impl'",
-        "tmux kill-session -t 'r01-dev1-impl'",
+        "tmux detach-client -s '=r01-dev1-impl'",
+        "tmux kill-session -t '=r01-dev1-impl'",
       ]);
     });
 
@@ -500,8 +500,8 @@ describe("TmuxAdapter", () => {
 
       expect(result).toEqual({ ok: true });
       expect(exec.mock.calls.map((call) => call[0])).toEqual([
-        "tmux detach-client -s 'r01-dev1-impl'",
-        "tmux kill-session -t 'r01-dev1-impl'",
+        "tmux detach-client -s '=r01-dev1-impl'",
+        "tmux kill-session -t '=r01-dev1-impl'",
       ]);
     });
 
@@ -516,7 +516,7 @@ describe("TmuxAdapter", () => {
 
       expect(result).toEqual({ ok: false, code: "unknown", message: "permission denied" });
       expect(exec.mock.calls.map((call) => call[0])).toEqual([
-        "tmux detach-client -s 'r01-dev1-impl'",
+        "tmux detach-client -s '=r01-dev1-impl'",
       ]);
     });
 
@@ -543,8 +543,8 @@ describe("TmuxAdapter", () => {
       await adapter.killSession("r01-dev's session");
 
       expect(exec.mock.calls.map((call) => call[0])).toEqual([
-        "tmux detach-client -s 'r01-dev'\"'\"'s session'",
-        "tmux kill-session -t 'r01-dev'\"'\"'s session'",
+        "tmux detach-client -s '=r01-dev'\"'\"'s session'",
+        "tmux kill-session -t '=r01-dev'\"'\"'s session'",
       ]);
     });
   });
@@ -782,7 +782,7 @@ describe("TmuxAdapter", () => {
 
       // The command is: tmux pipe-pane -t <quoted session> <quoted 'cat >> <quoted path>'>
       const cmd = (exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-      expect(cmd).toContain("tmux pipe-pane -t 'dev-impl@my-rig'");
+      expect(cmd).toContain("tmux pipe-pane -t '=dev-impl@my-rig:'");
       expect(cmd).toContain("cat >>");
       expect(cmd).toContain("dev-impl@my-rig.log");
     });
@@ -794,7 +794,7 @@ describe("TmuxAdapter", () => {
       await adapter.startPipePane("dev@rig", "/path/with spaces/transcript.log");
 
       const cmd = (exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-      expect(cmd).toContain("tmux pipe-pane -t 'dev@rig'");
+      expect(cmd).toContain("tmux pipe-pane -t '=dev@rig:'");
       expect(cmd).toContain("cat >>");
       expect(cmd).toContain("with spaces");
     });
@@ -806,7 +806,7 @@ describe("TmuxAdapter", () => {
       await adapter.startPipePane("dev@rig", "/path/it's/transcript.log");
 
       const cmd = (exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-      expect(cmd).toContain("tmux pipe-pane -t 'dev@rig'");
+      expect(cmd).toContain("tmux pipe-pane -t '=dev@rig:'");
       // The apostrophe should be escaped, not left raw
       expect(cmd).not.toContain("it's/");
     });
@@ -827,7 +827,7 @@ describe("TmuxAdapter", () => {
 
       await adapter.stopPipePane("dev-impl@my-rig");
 
-      expect(exec).toHaveBeenCalledWith("tmux pipe-pane -t 'dev-impl@my-rig'");
+      expect(exec).toHaveBeenCalledWith("tmux pipe-pane -t '=dev-impl@my-rig:'");
     });
   });
 
@@ -1005,13 +1005,13 @@ describe("TmuxAdapter", () => {
       expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t '%0'");
     });
 
-    it("shell-quotes a session-name target safely", async () => {
+    it("shell-quotes a session-name target safely, as an exact target", async () => {
       const exec = vi.fn<ExecFn>().mockResolvedValue("x");
       const adapter = new TmuxAdapter(exec);
 
       await adapter.capturePaneScreen("dev-impl@my-rig");
 
-      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t 'dev-impl@my-rig'");
+      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t '=dev-impl@my-rig:'");
     });
 
     it("returns null on error (pane gone)", async () => {
