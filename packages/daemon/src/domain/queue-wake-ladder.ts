@@ -325,6 +325,16 @@ type WakeMode = "failed" | "unconfirmed";
 function classifyWakeResult(lastNudgeResult: string | null): WakeMode | null {
   if (!lastNudgeResult) return null;
   if (lastNudgeResult.startsWith("failed:")) return "failed";
+  // #344 follow-up — a typing-guard refusal (retained:) wrote NO pane input, so an
+  // unclaimed baton keeps a retry path instead of stranding behind a terminal
+  // recovery. Admission is scoped to unclaimed batons by unclaimedWakeMode(): the
+  // claimed parked-owner arm's retry readback still selects `failed:%` only, so
+  // admitting retained there would make recovery OWN a row that nothing retries.
+  // Retry behaviour, as it actually runs: the first retry re-probes the guard and
+  // records a fresh attempt; later retries reuse the same delivery id, whose
+  // retained readback returns `retained` again even after the guard has cleared —
+  // so the row re-probes once and then escalates rather than looping probes.
+  if (lastNudgeResult.startsWith("retained:")) return "failed";
   if (
     lastNudgeResult === "delivered-ack-pending" ||
     lastNudgeResult.startsWith("indeterminate:") ||
@@ -334,13 +344,27 @@ function classifyWakeResult(lastNudgeResult: string | null): WakeMode | null {
   return null; // verified (or unknown vocabulary) — never enters the ladder
 }
 
+/** A retained (typing-guard) result is retryable ONLY for an unclaimed baton. The
+ * ladder's claimed-row retry query selects `failed:%` only, so a claimed row whose
+ * last result is `retained:` would be owned without ever being retried — the
+ * parked-owner watchdog would then skip it. Keep the retained class scoped to the
+ * unclaimed baton path the PR is about; every other state keeps the pre-change
+ * `null` classification. */
+function unclaimedWakeMode(row: Pick<QueueItem, "state" | "claimedAt" | "handedOffFrom" | "lastNudgeResult">): WakeMode | null {
+  const mode = classifyWakeResult(row.lastNudgeResult);
+  if (mode === null) return null;
+  const retained = row.lastNudgeResult?.startsWith("retained:") ?? false;
+  if (retained && !(row.state === "pending" && !row.claimedAt && row.handedOffFrom)) return null;
+  return mode;
+}
+
 /** Another consumer may diagnose the same parked seat, but the existing
  * delivery ladder/disposition already owns these obligations' next wake.
  * Diagnosis remains visible; only duplicate delivery is suppressed. */
 export function queueRecoveryOwnsWake(db: Database.Database, row: QueueItem | null): boolean {
   if (!row || !["pending", "in-progress", "blocked"].includes(row.state)) return false;
   if (findQueueRecovery(db, row.qitemId)) return true;
-  const mode = classifyWakeResult(row.lastNudgeResult);
+  const mode = unclaimedWakeMode(row);
   if (!mode) return false;
   if (row.state === "pending" && !row.claimedAt && row.handedOffFrom) {
     return mode === "failed" || !hasPickupEvidence(db, row);
@@ -413,7 +437,7 @@ export function readWakeLadderBackstop(db: Database.Database, qitemId: string): 
     note: "Current recovery disposition owns the continuation; inspect that row. New source evidence is evaluated afresh.",
   });
   if (recovery && !["pending", "in-progress", "blocked"].includes(recovery.state)) return recoveryBackstop();
-  const mode = classifyWakeResult(row.lastNudgeResult);
+  const mode = unclaimedWakeMode(row);
   const eligible = (row.state === "pending" && !row.claimedAt && row.handedOffFrom)
     || (row.state === "in-progress" && row.claimedAt && mode === "failed" && db.prepare(
       "SELECT 1 FROM queue_transitions WHERE qitem_id = ? AND transition_note LIKE 'parked-owner wake delivery failed:%' LIMIT 1",
@@ -665,7 +689,7 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
         actions.push({ qitemId: row.qitemId, action: "park-usage-limit" });
         continue;
       }
-      const mode = classifyWakeResult(row.lastNudgeResult);
+      const mode = unclaimedWakeMode(row);
       if (!mode) continue;
       const disposition = findQueueRecovery(deps.db, row.qitemId);
       if (disposition && !["pending", "in-progress", "blocked"].includes(disposition.state)) continue;
