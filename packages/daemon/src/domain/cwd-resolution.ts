@@ -53,11 +53,18 @@ export function isPathInsideRoot(candidatePath: string, rootPath: string): boole
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${nodePath.sep}`) && !nodePath.isAbsolute(relative));
 }
 
+export function isFilesystemRoot(cwd: string): boolean {
+  const resolved = nodePath.resolve(cwd);
+  return resolved === nodePath.parse(resolved).root;
+}
+
 export function getOpenRigInstallCwdError(
   resolvedCwd: string,
   cwdOverride?: string | null,
   installRoot: string = getOpenRigInstallRoot(),
 ): string | null {
+  // The filesystem root is not refused (#226): an explicit --cwd / or `cwd: /` is the person's
+  // choice, and `rig up` warns when it defaulted to '/' itself.
   if (cwdOverride && cwdOverride.trim().length > 0) {
     return null;
   }

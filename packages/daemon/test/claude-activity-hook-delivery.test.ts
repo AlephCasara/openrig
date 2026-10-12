@@ -15,7 +15,7 @@
 // path is preserved). Malformed settings are preserved (fail-closed). Missing
 // source produces NO dangling commands and NO false projected claim.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
@@ -362,6 +362,31 @@ describe("Claude activity-hook delivery — hardening (guard r3 findings)", () =
       expect(res.skipped).toContain("claude-activity-hooks");
     });
   }
+});
+
+// #226: a seat whose cwd resolves to '/' has no project workspace. Delivery is still attempted there, as on
+// main (it works where '/' is writable, e.g. root in a container); when it fails, the warning says why.
+describe("Claude activity-hook delivery — cwd at the filesystem root", () => {
+  it("a writable root still gets the hooks delivered", async () => {
+    const fs = enableFs();
+    const res = await makeAdapter(fs).project(plan([activityEntry()]), binding("/"));
+    expect(res.projected).toContain("claude-activity-hooks");
+    expect(allCommands(JSON.parse(fs._store["/.claude/settings.local.json"]!)).length).toBeGreaterThan(0);
+  });
+
+  it("an unwritable root reports skipped and names the filesystem root as the reason", async () => {
+    const fs = enableFs();
+    fs.mkdirp = (p: string) => { if (p === "/.claude") throw new Error(`ENOENT: no such file or directory, mkdir '${p}'`); };
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await makeAdapter(fs).project(plan([activityEntry()]), binding("/"));
+      expect(res.projected).not.toContain("claude-activity-hooks");
+      expect(res.skipped).toContain("claude-activity-hooks");
+      expect(log.mock.calls.flat().join("\n")).toMatch(/reconcile warning \(cwd '\/' resolves to the filesystem root, not a project workspace\): ENOENT/);
+    } finally {
+      log.mockRestore();
+    }
+  });
 });
 
 // M1 (R1 verdict): ownership must ROUND-TRIP shellQuote. A cwd containing a legal apostrophe
