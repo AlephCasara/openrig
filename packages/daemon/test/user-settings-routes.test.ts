@@ -109,7 +109,8 @@ describe("config routes (User Settings v0)", () => {
     // + 1 ui.enabled (web UI and its terminal WebSocket; default off).
     // + 1 launch.non_interruptive (new-rig launch default; default off).
     // + 1 queue.wake_human_rung (#811; default "always").
-    expect(Object.keys(body.settings).length).toBe(73);
+    // + 1 output.compact (slice 15 compact command-output switch; default off).
+    expect(Object.keys(body.settings).length).toBe(74);
     expect(body.settings["launch.non_interruptive"]).toMatchObject({ value: false, source: "default" });
     expect(body.settings["runtime.readiness_timeout_seconds"]).toMatchObject({ value: 30, source: "default" });
     expect(body.settings["ui.enabled"]).toMatchObject({ value: false, source: "default" });
