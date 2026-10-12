@@ -529,16 +529,18 @@ function findOwningMission(missionsRoot: string, slicePath: string): string | nu
 // Auto-numbering
 // ---------------------------------------------------------------------
 
+export { tryClaimSliceNN } from "./slice-claims.js";
+
 /** Find the next available NN for a mission's slices/ folder. Scans
- *  BOTH slices/ AND closed/ so numbers are never reused (§3.2). */
+ *  BOTH slices/ AND closed/, including ordinal claims, so numbers are never reused (§3.2). */
 export function nextSliceNN(missionAbsPath: string): number {
   let max = 0;
   for (const subdir of ["slices", "closed"]) {
     const root = path.join(missionAbsPath, subdir);
     if (!fs.existsSync(root)) continue;
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const m = SLICE_DIRNAME_RE.exec(entry.name);
+      const marker = subdir === "slices" ? /^\.nn-(\d+)$/.exec(entry.name) : null;
+      const m = marker ?? (entry.isDirectory() ? SLICE_DIRNAME_RE.exec(entry.name) : null);
       if (!m) continue;
       const n = Number(m[1]);
       if (Number.isFinite(n) && n > max) max = n;
