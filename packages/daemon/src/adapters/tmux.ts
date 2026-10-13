@@ -942,6 +942,17 @@ export class TmuxAdapter {
     }
   }
 
+  /** The pane's whole text, history and visible screen, with wrapped lines joined. Null when unreadable. */
+  async capturePaneHistory(paneTarget: string): Promise<string | null> {
+    const exact = exactTarget(paneTarget, "pane");
+    try {
+      return await this.run(["tmux", "capture-pane", "-p", "-J", "-t", exact, "-S", "-", "-E", "-"],
+        `tmux capture-pane -p -J -t ${shellQuote(exact)} -S - -E -`);
+    } catch {
+      return null;
+    }
+  }
+
   /** Signal one process by pid. signalPaneProcess signals the pane's root, which in a shell-backed pane is
    *  the shell, not the runtime running under it. Unix `kill`, like signalPaneProcess. */
   async signalPid(pid: number, signal: "TERM" | "KILL"): Promise<TmuxResult> {

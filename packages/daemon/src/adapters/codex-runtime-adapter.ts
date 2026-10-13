@@ -26,7 +26,7 @@ import {
 } from "../domain/codex-thread-id.js";
 import { assessNativeResumeProbe, buildCodexResumeCore, hasCodexUpdateHeader, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
 import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
-import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
+import { CODEX_NETWORK_DEFAULT_OVERRIDE, codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 import { resolveCodexGitAddDirs, type CodexGitAddDirResolver } from "../domain/codex-git-add-dirs.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { excludeNewGeneratedFiles } from "../domain/generated-file-hygiene.js";
@@ -44,6 +44,15 @@ interface UpdatePromptAttempt {
 }
 
 type CodexProcess = NativeProcessRow;
+
+/** What a running Codex was launched with that a launch would otherwise decide by probing (the network
+ *  reader, the --no-daemon support probe) or by preparing directories (add-dirs). A relaunch that must keep the
+ *  running Codex's effective settings takes these from its argv instead. */
+export interface RunningCodexLaunch {
+  networkOverride: boolean;
+  daemonOptOut: boolean;
+  addDirs: string[];
+}
 
 interface PreparedCodexLaunch {
   ok: true;
@@ -447,13 +456,21 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    *  for a caller that runs it itself (a respawned direct-native pane). Nothing is sent to the pane. */
   async buildResumeCommand(
     binding: NodeBinding,
-    opts: { name: string; resumeToken: string },
+    opts: { name: string; resumeToken: string; running?: RunningCodexLaunch },
   ): Promise<{ ok: true; command: string; core: string; appliedLaunch: AppliedLaunchObservation } | { ok: false; error: string }> {
     if (!binding.tmuxSession) return { ok: false, error: "No tmux session bound — cannot build a Codex resume command" };
-    const prepared = await this.prepareLaunch(binding, opts.name);
+    const prepared = await this.prepareLaunch(binding, opts.name, opts.running);
     if (!prepared.ok) return prepared;
     const core = this.resumeCore(prepared, opts.resumeToken, binding);
     return { ok: true, command: await this.seatCommand(binding, core), core, appliedLaunch: prepared.appliedLaunch };
+  }
+
+  /** Type a command buildResumeCommand built into the pane's shell, then verify the resume as launchHarness
+   *  does. Nothing is prepared again, so the command runs exactly as it was built and checked. */
+  async sendResumeCommand(tmuxSession: string, command: string, resumeToken: string): Promise<HarnessLaunchResult> {
+    const textResult = await this.tmux.sendShellCommand(tmuxSession, command);
+    if (!textResult.ok) return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
+    return this.verifyResumeInPane(tmuxSession, resumeToken);
   }
 
   /** launchHarness's resume verification for a resume the caller started itself: dismiss a skippable update
@@ -465,8 +482,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     return this.verifyResumeLaunch(tmuxSession, updatePrompt, { resumeToken });
   }
 
-  /** Launch flags shared by fresh, fork and resume, decided once per launch. */
-  private async prepareLaunch(binding: NodeBinding, name: string): Promise<PreparedCodexLaunch | { ok: false; error: string }> {
+  /** Launch flags shared by fresh, fork and resume, decided once per launch. With `running`, the probed and
+   *  prepared parts come from the running Codex instead, and no Codex process is started to decide them. */
+  private async prepareLaunch(binding: NodeBinding, name: string, running?: RunningCodexLaunch): Promise<PreparedCodexLaunch | { ok: false; error: string }> {
     const model = binding.model?.trim();
     const modelArg = model ? ` -m ${shellQuote(model)}` : "";
     const effort = binding.effort?.trim();
@@ -476,6 +494,14 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const posture = codexPostureArg(profileArg, process.env, binding.launchPosture);
     const appliedLaunch = observeCodexSandbox(posture);
     const postureArg = posture + operationalLaunchArg(this.runtime, binding);
+
+    if (running) {
+      // The running Codex already loaded its profile; drift in -p is the caller's to compare.
+      return { ok: true, model, modelArg, effort, effortArg, profile, appliedLaunch, postureArg,
+        queueStateDirArg: running.addDirs.map((dir) => ` --add-dir ${shellQuote(dir)}`).join(""),
+        daemonOptOut: running.daemonOptOut, daemonArg: running.daemonOptOut ? " --no-daemon" : "",
+        networkArg: running.networkOverride ? ` -c ${shellQuote(CODEX_NETWORK_DEFAULT_OVERRIDE)}` : "" };
+    }
 
     // OPR.0.3.4.7 — profile-LOAD probe before launch/resume. A legacy
     // [profiles.<name>] table or invalid TOML must fail BEFORE the opaque
