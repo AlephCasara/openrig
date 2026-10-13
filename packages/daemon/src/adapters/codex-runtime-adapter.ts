@@ -408,10 +408,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       const threadId = await this.captureFreshThreadId(binding, updatePrompt);
       if (updatePrompt.failure) return updatePrompt.failure;
       if (!threadId) {
-        return {
-          ok: false,
-          error: "codex fork: could not capture new post-fork thread id",
-        };
+        // For a handover a missed capture is pending metadata, not a failed launch: the fork returns
+        // without a token and the handover's readiness checks still decide success. Every other fork
+        // caller refuses, as before.
+        if (opts.forkSource.pendingIdAllowed) return { ok: true, appliedLaunch };
+        return { ok: false, error: "codex fork: could not capture new post-fork thread id" };
       }
       return { ok: true, resumeToken: threadId, resumeType: "codex_id", appliedLaunch };
     }
