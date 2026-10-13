@@ -4,6 +4,7 @@
 // 40,000 truncation; top-level text is the screen-reader/notification fallback)
 // https://docs.slack.dev/reference/block-kit/blocks/section-block/ (3,000)
 // https://docs.slack.dev/reference/block-kit/blocks/ (50 blocks)
+import { createHash } from "node:crypto";
 import { MAX_OPTION_LABEL, type HumanQuestion } from "../../human-questions.js";
 
 export const SLACK_TEXT_CAP = 3900; // Our conservative complete-fallback budget, not Slack’s hard limit.
@@ -173,10 +174,12 @@ export function containsSecret(text: string): boolean {
   });
 }
 
+const REDACTED_SECRET = "[redacted-secret]";
+
 export function redactSecrets(text: string): string {
   let out = text;
   for (const p of SECRET_PATTERNS) {
-    out = out.replace(p, "[redacted-secret]");
+    out = out.replace(p, REDACTED_SECRET);
   }
   return out;
 }
@@ -288,16 +291,55 @@ function bounded(text: string, max: number, field: string): string {
   return text;
 }
 
+/** Longest tag value the gate context line shows, in characters, ellipsis included. */
+export const GATE_CONTEXT_VALUE_CAP = 80;
+
+/** Shorten a redacted tag value to GATE_CONTEXT_VALUE_CAP characters: its start and end around
+ * `…`, then the first 12 hex characters of the SHA-256 of the whole value. Labels that differ at
+ * the start or end stay visibly distinct; for labels that differ only in the cut middle, the
+ * digest makes a collision unlikely but doesn't rule it out. Counts code points, so no surrogate
+ * pair is split, and keeps a redaction marker whole or leaves it out, never cut. */
+function shortenGateValue(value: string): string {
+  const tokens: string[] = [];
+  value.split(REDACTED_SECRET).forEach((part, index) => {
+    if (index > 0) tokens.push(REDACTED_SECRET);
+    tokens.push(...Array.from(part));
+  });
+  const width = (token: string) => (token === REDACTED_SECRET ? REDACTED_SECRET.length : 1);
+  if (tokens.reduce((sum, token) => sum + width(token), 0) <= GATE_CONTEXT_VALUE_CAP) return value;
+  const hash = ` #${createHash("sha256").update(value).digest("hex").slice(0, 12)}`;
+  const room = GATE_CONTEXT_VALUE_CAP - hash.length - 1;
+  const take = (from: string[], budget: number): string[] => {
+    const kept: string[] = [];
+    let used = 0;
+    for (const token of from) {
+      if (used + width(token) > budget) break;
+      kept.push(token);
+      used += width(token);
+    }
+    return kept;
+  };
+  const head = take(tokens, Math.floor(room / 2));
+  const tail = take([...tokens.slice(head.length)].reverse(), room - Math.floor(room / 2)).reverse();
+  return `${head.join("")}…${tail.join("")}${hash}`;
+}
+
 /** PR #1143 review — the one-line workflow/instance context for a rendered human gate,
  * built from the row's own `workflow:` / `instance:` / `step:` tags. The step rides along
- * only when tagged. Missing tags render as `?` so the line never names the wrong workflow. */
-export function buildGateContextLine(tags: readonly string[]): string {
-  const tagValue = (prefix: string): string =>
-    tags.find((t) => t.startsWith(`${prefix}:`))?.slice(prefix.length + 1) || "?";
+ * only when tagged. Missing tags render as `?` so the line never names the wrong workflow.
+ * A hand-made row can carry a tag of any length, so each value is redacted, then shortened
+ * (shortenGateValue), and only then is the line escaped, so no escape is split.
+ * `instanceOnly` gives the shorter line that still tells two instances apart. */
+export function buildGateContextLine(tags: readonly string[], instanceOnly = false): string {
+  const tagValue = (prefix: string): string => {
+    const raw = tags.find((t) => t.startsWith(`${prefix}:`))?.slice(prefix.length + 1);
+    return raw ? shortenGateValue(redactSecrets(raw)) : "?";
+  };
+  if (instanceOnly) return escapeSlackText(`instance ${tagValue("instance")}`);
   const parts = [`Workflow ${tagValue("workflow")}`, `instance ${tagValue("instance")}`];
   const step = tagValue("step");
   if (step !== "?") parts.push(`step ${step}`);
-  return inert(parts.join(" · "));
+  return escapeSlackText(parts.join(" · "));
 }
 
 /** Pure, deterministic rendering. Queue metadata stays in the durable request;
@@ -337,9 +379,18 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
-  const text = bounded([headline, gateContext, body, questionParts?.text, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
+  const fallback = (context: string | null) => [headline, context, body, questionParts?.text, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n");
+  // The gate context line is supplementary: when it alone would push the complete fallback over
+  // budget, the instance part alone is tried, and the line is left out only when even that
+  // doesn't fit, rather than refusing the gate.
+  let shownContext = gateContext;
+  if (gateContext && fallback(gateContext).length > SLACK_TEXT_CAP && fallback(null).length <= SLACK_TEXT_CAP) {
+    const instanceLine = buildGateContextLine(q.tags ?? [], true);
+    shownContext = fallback(instanceLine).length <= SLACK_TEXT_CAP ? instanceLine : null;
+  }
+  const text = bounded(fallback(shownContext), SLACK_TEXT_CAP, "complete fallback");
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: headline } }];
-  if (gateContext) blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: gateContext }] });
+  if (shownContext) blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: shownContext }] });
   if (body.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
   if (questionParts) blocks.push(...questionParts.blocks);
   blocks.push(...imageBlocks);
