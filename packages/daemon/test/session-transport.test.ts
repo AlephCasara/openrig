@@ -543,10 +543,10 @@ describe("SessionTransport", () => {
     });
   }
 
-  function seedCanonicalRig() {
+  function seedCanonicalRig(runtime = "claude-code") {
     const rig = rigRepo.createRig("my-rig");
     const node = rigRepo.addNode(rig.id, "dev.impl", {
-      role: "worker", runtime: "claude-code",
+      role: "worker", runtime,
     });
     const session = sessionRegistry.registerSession(node.id, "dev-impl@my-rig");
     sessionRegistry.updateStatus(session.id, "running");
@@ -888,6 +888,82 @@ describe("SessionTransport", () => {
     const tmux = mockTmux({
       sendKeys: async () => { submitted = true; return { ok: true }; },
       capturePaneContent: async () => submitted ? "❯ " + message.split("\n").join("\n  ") : "❯ ",
+    });
+    const result = await createTransport(tmux, { sleep: async () => undefined })
+      .send("dev-impl@my-rig", message, { verify: true });
+    expect(result).toMatchObject({ ok: true, verified: false, outcome: "rendered-unconfirmed" });
+  });
+
+  it.each(["❯", "›", "»"].flatMap(glyph =>
+    ["raw staged", "raw submitted", "envelope staged", "envelope submitted", "quoted draft", "quoted prompt in draft", "after reply", "flat transcript boundary"]
+      .map(mode => [glyph, mode] as const),
+  ))("send verification recognises composer %s: %s", async (glyph, mode) => {
+    seedCanonicalRig(glyph === "❯" ? "claude-code" : "codex");
+    const message = mode.startsWith("raw") ? "Please check this task."
+      : "From: sender-agent@demo\nTo: dev-impl@my-rig\n---\nPlease check this task.";
+    const render = (text: string) => glyph + " " + text.split("\n").join("\n  ");
+    const verified = mode === "raw submitted" || mode === "envelope submitted" || mode === "after reply" || mode === "flat transcript boundary";
+    let submitted = false;
+    const tmux = mockTmux({
+      sendKeys: async () => { submitted = true; return { ok: true }; },
+      capturePaneContent: async () => {
+        if (!submitted) return "Prior output\n" + glyph + " ";
+        if (mode === "quoted draft") return glyph + " Check this envelope:\n  " + message.split("\n").join("\n  ");
+        if (mode === "quoted prompt in draft") return render(message) + "\n  " + glyph + " quoted prompt";
+        if (mode === "flat transcript boundary") return message + "\n" + glyph + " previous input\nAgent reply\n" + glyph + " ";
+        const previous = mode === "after reply"
+          ? render(message.replace("Please check this task.", "A different task.")) + "\nAgent reply\n" : "";
+        return previous + render(message) + (verified ? "\n" + glyph + " " : "");
+      },
+    });
+    const result = await createTransport(tmux, { sleep: async () => undefined })
+      .send("dev-impl@my-rig", message, { verify: true });
+    expect(result).toMatchObject({ ok: true, verified,
+      outcome: verified ? "delivered" : "rendered-unconfirmed" });
+  });
+
+  it.each([
+    ["raw", "same-column below draft"], ["raw", "below framed draft"],
+    ["envelope", "same-column below draft"], ["envelope", "below framed draft"],
+    ["envelope", "assistant quoted envelope"],
+    ["envelope", "flat body »"], ["envelope", "flat body ›"], ["envelope", "flat body ❯"],
+  ])("Claude verification keeps existing boundaries: %s %s", async (kind, shape) => {
+    const rig = rigRepo.createRig("verification");
+    const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+    const address = "worker@verification";
+    const session = sessionRegistry.registerSession(node.id, address);
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateBinding(node.id, { tmuxSession: address });
+    let message = kind === "raw" ? "Check the blue ledger, then report its total."
+      : `From: sender@fixture\nTo: ${address}\nSent: 10-13 10:00Z\n---\nCheck the blue ledger.\nReport its total.\n---\n↩ Reply: rig send sender@fixture "..."`;
+    const render = (glyph: string, text: string) => glyph + " " + text.split("\n").join("\n  ");
+    let post = render("❯", message) + "\n» reply quotation below live input";
+    if (shape === "below framed draft") post = "────────────────────\n" + render("❯", message) + "\n────────────────────\n? for shortcuts\n» later quote";
+    if (shape === "assistant quoted envelope") post = "❯ Different request\nAssistant reply with quotation:\n" + render("»", message) + "\n❯ ";
+    if (shape.startsWith("flat body")) {
+      message = message.replace("Check the blue ledger.", shape.slice(-1) + " Check the blue ledger.");
+      post = message + "\n❯ ";
+    }
+    let submitted = false;
+    const tmux = mockTmux({
+      sendKeys: async () => { submitted = true; return { ok: true }; },
+      capturePaneContent: async () => submitted ? post : "❯ ",
+    });
+    const result = await createTransport(tmux, { sleep: async () => undefined }).send(address, message, { verify: true });
+    const verified = shape === "flat body »";
+    expect(result).toMatchObject({ ok: true, verified,
+      outcome: verified ? "delivered" : "rendered-unconfirmed" });
+  });
+
+  it("unknown-runtime verification keeps existing boundaries", async () => {
+    const { node } = seedCanonicalRig();
+    db.prepare("UPDATE nodes SET runtime = NULL WHERE id = ?").run(node.id);
+    expect(db.prepare("SELECT runtime FROM nodes WHERE id = ?").get(node.id)).toEqual({ runtime: null });
+    const message = "Check the blue ledger, then report its total.";
+    let submitted = false;
+    const tmux = mockTmux({
+      sendKeys: async () => { submitted = true; return { ok: true }; },
+      capturePaneContent: async () => submitted ? "❯ " + message + "\n» reply quotation below live input" : "❯ ",
     });
     const result = await createTransport(tmux, { sleep: async () => undefined })
       .send("dev-impl@my-rig", message, { verify: true });
