@@ -14,7 +14,8 @@
 // any served shape.
 import type { Database } from "better-sqlite3";
 import { hasClientCostColumns } from "./usage-samples-store.js";
-import { hasPiUsageEntriesTable } from "./pi-usage-entries-store.js";
+import { hasPiUsageChargesTable, hasPiUsageEntriesTable } from "./pi-usage-entries-store.js";
+import { openRouterChargeTarget } from "./openrouter-charge.js";
 
 export interface UsageSeriesQuery {
   seatSession?: string;
@@ -310,7 +311,39 @@ export type PiSeatCost = {
     unknownOrigin: { count: number; costUsd: number | null };
   };
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /** OPR.0.7.0.2 K4: OpenRouter's actual charge for this session's own requests, BESIDE the estimate (never added
+   *  to it). Present once the store can hold charges. */
+  providerCharge?: PiProviderChargeView;
 };
+
+export type PiProviderChargeView = {
+  kind: "provider charge";
+  source: "OpenRouter GET /api/v1/generation (data.total_cost, USD)";
+  /** What the lookup covers and the case it can't observe. */
+  coverage: string;
+  /** reported: every covered request charged; partial: some; pending: lookups not finished; unavailable: none
+   *  could be charged; none: no lookups recorded; not-applicable: no OpenRouter requests in this session. */
+  status: "reported" | "partial" | "pending" | "unavailable" | "none" | "not-applicable";
+  /** The charged requests' total, in USD; absent when none is charged. */
+  costUsd?: number;
+  /** Pi's estimate for exactly the charged requests, to read beside costUsd. */
+  estimateForChargedUsd?: number | null;
+  requests: {
+    openRouter: number;
+    covered: number;
+    charged: number;
+    pending: number;
+    unavailable: { count: number; reasons: Record<string, number> };
+    notCovered: { count: number; reasons: Record<string, number> };
+  };
+  /** Who was charged, as far as the lookups establish it: the generating credential's name (never a value) and
+   *  the workspace(s) OpenRouter attributed the generations to. */
+  accountContext: { credentialSources: string[]; workspaceIds: string[]; byokRequests: number };
+};
+
+export const PI_COST_COVERAGE_WITH_CHARGE = "this Pi session's own persisted entries of every usage-bearing kind Pi records (assistant, usage, tool result, compaction, branch summary), each counted once; a model-priced estimate from catalog rates, not a provider charge (OpenRouter's actual charge, where established, is in providerCharge beside it, never added)";
+
+export const PI_PROVIDER_CHARGE_COVERAGE = "OpenRouter requests Pi made through its openai-completions API with a recorded generation id, looked up with the key OpenRig forwarded only when the runner's observations before and after the request show that key as Pi's credential and no extension, credential-bearing models.json OpenRouter entry or unclassifiable credential source, and none has been seen, nor any reading failed, in the runner's life (models.json is read as Pi reads it, comments included). Conservatively excluded too: any settings.json package entry, and an explicit models.json apiKey even when it names OPENROUTER_API_KEY. Anthropic-messages requests, other credentials, inherited and unknown-origin entries are not looked up. Not observable: a credential Pi loads and drops between two of the runner's observations (an extension, a models.json entry, or a stored key added and removed within one gap), including runtime effects Pi keeps after it; Pi records no per-request credential";
 
 export const PI_COST_COVERAGE = "this Pi session's own persisted entries of every usage-bearing kind Pi records (assistant, usage, tool result, compaction, branch summary), each counted once; a model-priced estimate from catalog rates, not a provider charge (an OpenRouter actual charge isn't correlated here)";
 
@@ -397,6 +430,64 @@ export function computeCostView(db: Database, q: { nowIso: string; seatSession?:
   return { seats, note };
 }
 
+function hasChargeOutcome(db: Database, piSession: string): boolean {
+  return !!db.prepare("SELECT 1 FROM pi_usage_charges WHERE pi_session_id = ? LIMIT 1").get(piSession);
+}
+
+/** OpenRouter's charge for one seat's Pi session: own assistant requests only, charged ones summed apart from
+ *  the estimate, every other request counted with its reason. */
+function providerChargeView(db: Database, seat: string, piSession: string): PiProviderChargeView {
+  const rows = db.prepare(
+    `SELECT e.kind, e.provider, e.api, e.response_id, e.cost_total, c.status, c.total_cost_usd, c.reason,
+            c.credential_source, c.workspace_id, c.is_byok, c.generation_id
+       FROM pi_usage_entries e
+       LEFT JOIN pi_usage_charges c ON c.pi_session_id = e.pi_session_id AND c.entry_id = e.entry_id
+      WHERE e.seat_session = ? AND e.pi_session_id = ? AND e.origin = 'own' AND e.kind = 'assistant' AND e.provider = 'openrouter'`,
+  ).all(seat, piSession) as Array<{ kind: string; provider: string | null; api: string | null; response_id: string | null;
+    cost_total: number | null; status: "charged" | "unavailable" | null; total_cost_usd: number | null; reason: string | null;
+    credential_source: string | null; workspace_id: string | null; is_byok: number | null; generation_id: string | null }>;
+  const tally = (into: Record<string, number>, key: string) => { into[key] = (into[key] ?? 0) + 1; };
+  const notCovered: Record<string, number> = {};
+  const unavailable: Record<string, number> = {};
+  const covered = rows.filter((row) => {
+    const target = openRouterChargeTarget({ kind: row.kind, provider: row.provider, api: row.api, responseId: row.response_id });
+    if ("notCovered" in target) tally(notCovered, target.notCovered);
+    return "generationId" in target;
+  });
+  const charged = covered.filter((row) => row.status === "charged" && row.generation_id === row.response_id);
+  for (const row of covered) if (row.status === "unavailable") tally(unavailable, row.reason ?? "unavailable");
+  const unavailableCount = covered.filter((row) => row.status === "unavailable").length;
+  const pending = covered.length - charged.length - unavailableCount;
+  const looked = covered.some((row) => row.status !== null);
+  const status: PiProviderChargeView["status"] = rows.length === 0 ? "not-applicable"
+    : charged.length > 0 && charged.length === covered.length ? "reported"
+    : charged.length > 0 ? "partial"
+    : !looked ? "none"
+    : pending > 0 ? "pending" : "unavailable";
+  const priced = charged.filter((row) => row.cost_total !== null);
+  const distinct = (values: Array<string | null>) => [...new Set(values.filter((v): v is string => !!v))].sort();
+  return {
+    kind: "provider charge",
+    source: "OpenRouter GET /api/v1/generation (data.total_cost, USD)",
+    coverage: PI_PROVIDER_CHARGE_COVERAGE,
+    status,
+    ...(charged.length > 0 ? {
+      costUsd: charged.reduce((t, row) => t + row.total_cost_usd!, 0),
+      estimateForChargedUsd: priced.length === charged.length ? priced.reduce((t, row) => t + row.cost_total!, 0) : null,
+    } : {}),
+    requests: {
+      openRouter: rows.length, covered: covered.length, charged: charged.length, pending,
+      unavailable: { count: unavailableCount, reasons: unavailable },
+      notCovered: { count: rows.length - covered.length, reasons: notCovered },
+    },
+    accountContext: {
+      credentialSources: distinct(covered.map((row) => row.credential_source)),
+      workspaceIds: distinct(charged.map((row) => row.workspace_id)),
+      byokRequests: charged.filter((row) => row.is_byok === 1).length,
+    },
+  };
+}
+
 interface PiRow {
   id: number; seat_session: string; pi_session_id: string; entry_timestamp: string; kind: PiSeatCost["kinds"] extends Record<infer K, number> ? K : never;
   input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; cost_total: number | null;
@@ -425,6 +516,7 @@ function piSeatCosts(db: Database, seatSession?: string): PiSeatCost[] {
          FROM pi_usage_entries WHERE seat_session = ? AND pi_session_id = ? ORDER BY entry_timestamp ASC, id ASC`,
     ).all(seat, piSession) as PiRow[];
     const own = rows.filter((r) => r.origin === "own");
+    const charged = hasPiUsageChargesTable(db) && hasChargeOutcome(db, piSession);
     const inherited = rows.filter((r) => r.origin === "inherited");
     const unknown = rows.filter((r) => r.origin === "unknown");
     const kinds = { assistant: 0, usage: 0, tool_result: 0, compaction: 0, branch_summary: 0 };
@@ -438,7 +530,7 @@ function piSeatCosts(db: Database, seatSession?: string): PiSeatCost[] {
         ? { reason: own.length === 0 ? "no own entries with usage are stored for this Pi session yet" : "Pi recorded no cost on this session's own entries" }
         : { costUsd: ownCost }),
       window: { piSessionId: piSession, since: own[0]?.entry_timestamp ?? null, asOf: own.at(-1)?.entry_timestamp ?? null },
-      coverage: PI_COST_COVERAGE,
+      coverage: charged ? PI_COST_COVERAGE_WITH_CHARGE : PI_COST_COVERAGE,
       kinds,
       entries: {
         own: own.length,
@@ -451,6 +543,8 @@ function piSeatCosts(db: Database, seatSession?: string): PiSeatCost[] {
         input: own.reduce((t, r) => t + r.input_tokens, 0), output: own.reduce((t, r) => t + r.output_tokens, 0),
         cacheRead: own.reduce((t, r) => t + r.cache_read_tokens, 0), cacheWrite: own.reduce((t, r) => t + r.cache_write_tokens, 0),
       },
+      // Only once this session has a charge outcome, so with the charge lookup off the view is unchanged.
+      ...(charged ? { providerCharge: providerChargeView(db, seat, piSession) } : {}),
     };
   });
 }
