@@ -355,11 +355,15 @@ restore) into one call.
 
 ```bash
 rig start                    # interactive: daemon + kernel + pick-and-restore
-rig start --last             # headless: restore all rigs that were last running
+rig start --last             # headless: restore rigs that were last running; a rig stopped on purpose stays down
 rig start --all              # headless: restore all rigs with restore-usable snapshots
 rig start --rigs <name> [<name>...]   # headless: restore only the named rigs
 rig start --json             # JSON output for agents
 ```
+
+`rig start --last` keeps down a rig that was stopped on purpose (`rig down` or `rig seat stop`).
+Bring it back with `rig start --rigs <rig>`. A rig whose seat statuses can't be read is still
+attempted, with a warning (`seat_status_unreadable`).
 
 Framing: `rig start` is the RECOVERY entry point, not the getting-started
 hero. The fresh-user boot hero remains `rig up <team>` (typically
