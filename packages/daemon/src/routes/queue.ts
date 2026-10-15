@@ -609,6 +609,7 @@ export function queueRoutes(): Hono {
       transitionNote?: string;
       closureReason?: string;
       closureTarget?: string;
+      resolution?: unknown;
       blockedOn?: string;
       wakeWatchdogId?: string;
       wakeAfterSeconds?: number;
@@ -632,6 +633,8 @@ export function queueRoutes(): Hono {
         transitionNote: body.transitionNote,
         closureReason: body.closureReason,
         closureTarget: body.closureTarget,
+        // Only text can be an outcome; any other value is treated as absent.
+        resolution: typeof body.resolution === "string" ? body.resolution : undefined,
         // OPR.0.4.4.19 FR-6 — the leg-1 park surface: blockedOn plus the
         // park-time summary/evidence_ref persist inputs.
         blockedOn: body.blockedOn,
