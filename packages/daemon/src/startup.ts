@@ -1234,6 +1234,14 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Capture compatibility before the spec-library initializer creates the primary directory.
   const userSpecLibraryRoot = getDefaultOpenRigPath("specs");
   const compatibleSpecLibraryRoot = getCompatibleOpenRigPath("specs");
+  const runtimeAdaptersMap = {
+    "claude-code": claudeAdapter,
+    "codex": codexAdapter,
+    "pi": piAdapter,
+    "omp": ompAdapter,
+    "stub": stubAdapter,
+    "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter(),
+  };
 
   const deps: AppDeps = {
     rigRepo,
@@ -1315,7 +1323,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     }),
     podInstantiator,
     podBundleSourceResolver,
-    runtimeAdapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
+    runtimeAdapters: runtimeAdaptersMap,
     transcriptStore,
     sessionTransport: (() => {
       const t = new SessionTransport({
@@ -1328,6 +1336,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         slowOpRecorder,
         activityEndpointFile: () => readActivityEndpointFile(OPENRIG_HOME),
         captureObserver: shadow.capture?.observer,
+        runtimeAdapters: runtimeAdaptersMap,
         // transport.verify_input_box, read at each verified Claude Code or Codex send (absent or unreadable = off).
         verifyInputBox: () => {
           try { return new ContextPackSettingsStore().resolveOne("transport.verify_input_box").value === true; } catch { return false; }
