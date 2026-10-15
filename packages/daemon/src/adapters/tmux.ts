@@ -638,12 +638,7 @@ export class TmuxAdapter {
    * environment can't be read: the caller can't tell whether the seat inherits
    * an identity, so it reports a warning (the launch still goes ahead). */
   private async excludeParentSessionEnv(sessionTarget: string, keep: readonly string[] = []): Promise<boolean> {
-    const global = await this.run(["tmux", "show-environment", "-g"], "tmux show-environment -g");
-    const inherited: Record<string, string> = {};
-    for (const line of global.split(/\r?\n/)) {
-      const eq = line.indexOf("=");
-      if (eq > 0) inherited[line.slice(0, eq)] = line.slice(eq + 1);
-    }
+    const inherited = await this.globalEnvironment();
     const keys = parentSessionEnvKeys(inherited).filter((key) => !keep.includes(key));
     for (const key of keys) {
       const argv = ["tmux", "set-environment", "-t", sessionTarget, "-r", key];
@@ -1097,6 +1092,38 @@ export class TmuxAdapter {
       if (error instanceof Error && error.message.includes(`unknown variable: ${key}`)) return undefined;
       throw new Error("Cannot read the session's launch environment.");
     }
+  }
+
+  /** Set one variable in a session's environment: what its next spawned process inherits, not a
+   *  running one. Callers that pass a value are putting it on a tmux command line. */
+  async setSessionEnv(session: string, key: string, value: string): Promise<void> {
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) throw new Error("Invalid session environment key.");
+    const target = exactTarget(session, "session");
+    await this.run(["tmux", "set-environment", "-t", target, key, value],
+      `tmux set-environment -t ${shellQuote(target)} ${shellQuote(key)} ${shellQuote(value)}`);
+  }
+
+  /** Remove one variable from a session's environment, so a process spawned there afterwards
+   *  inherits the server's value for it, or none. A name that is the launching session's own
+   *  identity in the server's environment (see parent-session-env) is marked removed instead, as a
+   *  launch does, so the server's value does not come back. */
+  async unsetSessionEnv(session: string, key: string): Promise<void> {
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) throw new Error("Invalid session environment key.");
+    const target = exactTarget(session, "session");
+    const parentIdentity = parentSessionEnvKeys(await this.globalEnvironment()).includes(key);
+    const flag = parentIdentity ? "-r" : "-u";
+    await this.run(["tmux", "set-environment", "-t", target, flag, key],
+      `tmux set-environment -t ${shellQuote(target)} ${flag} ${shellQuote(key)}`);
+  }
+
+  private async globalEnvironment(): Promise<Record<string, string>> {
+    const global = await this.run(["tmux", "show-environment", "-g"], "tmux show-environment -g");
+    const inherited: Record<string, string> = {};
+    for (const line of global.split(/\r?\n/)) {
+      const eq = line.indexOf("=");
+      if (eq > 0) inherited[line.slice(0, eq)] = line.slice(eq + 1);
+    }
+    return inherited;
   }
 
   /** OPR.0.4.3.28 Part C — usable-presence check for a session-env variable.
