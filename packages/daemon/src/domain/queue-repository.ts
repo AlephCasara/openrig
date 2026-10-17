@@ -2476,16 +2476,17 @@ export class QueueRepository {
       );
     }
     const hasNote = typeof input.transitionNote === "string" && input.transitionNote.trim().length > 0;
+    const hasValidSummary = typeof input.summary === "string" && input.summary.trim().length > 0;
     const isGuardedTerminal = (["done", "canceled", "handed-off"] as const).includes(
       qitem.state as "done" | "canceled" | "handed-off",
     );
     const isStatePreservingAppend = input.state === undefined || (isGuardedTerminal && input.state === qitem.state);
 
     if (isStatePreservingAppend) {
-      if (input.state === undefined && !hasNote) {
+      if (input.state === undefined && !hasNote && !hasValidSummary) {
         throw new QueueRepositoryError(
           "state_or_note_required",
-          "queue update requires --state or a non-empty --note; nothing was written",
+          "queue update requires --state, a non-empty --note, or a non-empty --summary; nothing was written",
         );
       }
       const disallowed = input.reopen === true
@@ -2498,8 +2499,9 @@ export class QueueRepository {
         || input.wakeMaxSeconds != null
         || input.wakeProgressEvidence != null
         || input.wakeMessage != null
-        || input.summary != null
-        || input.evidenceRef != null;
+        || input.evidenceRef != null
+        || (input.state !== undefined && input.summary != null)
+        || (input.summary != null && !hasValidSummary);
       if (disallowed) {
         throw new QueueRepositoryError(
           "note_append_fields_not_admitted",
@@ -2507,11 +2509,21 @@ export class QueueRepository {
         );
       }
 
+      if (hasValidSummary) {
+        this.persistSummary(input.qitemId, input.summary!);
+      }
+
+      const note = hasValidSummary
+        ? (hasNote
+          ? (input.transitionNote!.includes("(summary updated)") ? input.transitionNote : `${input.transitionNote} (summary updated)`)
+          : "summary updated")
+        : input.transitionNote;
+
       this.transitionLog.append({
         qitemId: input.qitemId,
         state: qitem.state,
         actorSession: input.actorSession,
-        transitionNote: input.transitionNote,
+        transitionNote: note,
         // A note-only append does not clear the claim's retained park gate.
         // Carry its audit pointer so a later state write can end this chain.
         closureTarget: qitem.state === "in-progress" ? this.retainedClaimBlocker(input.qitemId) : undefined,
@@ -2525,7 +2537,7 @@ export class QueueRepository {
         closureReason: null,
         closureTarget: null,
         actorSession: input.actorSession,
-        summary: qitem.summary ?? null,
+        summary: hasValidSummary ? input.summary! : (qitem.summary ?? null),
       });
       return { persistedEvent, persistedEvents: [persistedEvent] };
     }
