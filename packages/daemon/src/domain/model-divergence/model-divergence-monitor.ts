@@ -56,7 +56,11 @@ export interface ModelDivergenceProclamation {
 
 /** D-a — the effective read carries a NAMED reason on every no-answer outcome, and may be async
  *  (the current-generation join reads the live process table). */
-export type EffectiveModelRead = { ok: true; model: string } | { ok: false; reason: string };
+export type EffectiveModelRead =
+  /** `pinReadings`: the pin's readings the record may match (default: the pin itself). The Pi
+   *  reader supplies Pi's own (`piSeatPinReadings`). */
+  | { ok: true; model: string; pinReadings?: string[] }
+  | { ok: false; reason: string };
 
 export interface ModelDivergenceMonitorDeps {
   /** Every running canonical seat carrying a model pin (the detector's whole population). */
@@ -191,7 +195,8 @@ export class ModelDivergenceMonitor {
     }
     this.pendingPolls.delete(key);
     this.pendingReasons.delete(key);
-    if (modelsMatch(seat.pinnedModel, read.model)) {
+    const pins = read.pinReadings ?? [seat.pinnedModel];
+    if (pins.some((pin) => modelsMatch(pin, read.model))) {
       this.settled.add(key);
       return;
     }
