@@ -11,6 +11,7 @@ import { getOpenRigHome } from "../../../openrig-compat.js";
 import { OWNER_NOTIFICATION_LEVELS, type OwnerNotificationLevel } from "../../queue-transition-log.js";
 import { BASELINE_REQUIRED_SCOPES } from "./capabilities.js";
 import { unsupportedChannelMapFields, validateChannelMap, type ChannelMapEntry } from "./channel-map.js";
+import { forwardChannelProblems, type ForwardChannel } from "./forwarding.js";
 
 export interface SlackConnectorConfig {
   enabled: boolean;
@@ -41,6 +42,12 @@ export interface SlackConnectorConfig {
    * it saves and digests unchanged.
    */
   channelMap?: ChannelMapEntry[];
+  /**
+   * One shared app across machines: on the hub (the machine with the app-level token), the
+   * channels another machine owns, each relayed to that machine's daemon (forwarding.ts). Absent =
+   * every channel is handled here, as before. Not in DEFAULT_CONFIG, like `channelMap`.
+   */
+  forwardChannels?: ForwardChannel[];
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -123,7 +130,17 @@ export function staticReadiness(cfg: SlackConnectorConfig, hasBotToken: boolean,
     { ok: Boolean(cfg.inboundDestination), label: "inbound-destination", detail: cfg.inboundDestination },
     { ok: cfg.enabled, label: "enabled", detail: cfg.enabled ? "yes" : "no (run `rig slack enable`)" },
     ...channelMapReadiness(cfg),
+    ...forwardReadiness(cfg),
   ];
+}
+
+/** One row only when channels are forwarded: where they go, or why forwarding is off. */
+function forwardReadiness(cfg: SlackConnectorConfig): ReadinessItem[] {
+  if (cfg.forwardChannels === undefined) return [];
+  const problems = forwardChannelProblems(cfg);
+  if (problems.length) return [{ ok: false, label: "forward-channels", detail: `OFF: ${problems.join("; ")}` }];
+  const hosts = [...new Set(cfg.forwardChannels.map((f) => f.host))];
+  return [{ ok: true, label: "forward-channels", detail: `${cfg.forwardChannels.length} channel(s) relayed to ${hosts.join(", ")}; each host needs an http entry (rig host list) and the app token here` }];
 }
 
 /** #192: one row only when a channel map is set. Fields this version does not support make the
