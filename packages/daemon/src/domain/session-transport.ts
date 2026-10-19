@@ -1628,6 +1628,11 @@ export interface SendResult {
   sent?: boolean;
   /** Present only when transport.verify_input_box applied to this send. */
   inputBox?: InputBoxEvidence;
+  /** How far the send got toward the seat's input, where that is positively known:
+   *  `not_reached` — an idle wait refused the send before any write was attempted;
+   *  `attempted` — the text write was issued and reported a failure (it may still have landed);
+   *  `written` — the text was written and the send stopped before or at Enter (it may sit in the input box). */
+  inputPhase?: "not_reached" | "attempted" | "written";
 }
 
 /** One reading of a Claude Code or Codex input box: `exact` (the sent text, word boundaries kept), `ambiguous`
@@ -2205,6 +2210,18 @@ export class SessionTransport {
       }
       return result;
     } catch (error) {
+      // A refusal thrown after the text was written (for example a guard check before Enter) is not "nothing sent".
+      if ((error as { inputWritten?: boolean }).inputWritten === true) {
+        // Only a throw before the Enter key reached the adapter positively means Enter was never sent.
+        const enter = (error as { enterAttempted?: boolean }).enterAttempted === true ? "the submission (Enter) outcome is unconfirmed" : "Enter was not sent";
+        return { ok: false, sessionName, sent: true, outcome: "failed", inputPhase: "written", reason: (error as { code?: string }).code ?? "submit_refused",
+          error: `Text was written to '${sessionName}' but ${enter}: ${(error as Error).message}` };
+      }
+      // A throw after the text write was issued: whether it landed is unknown, so it is not "nothing sent" either.
+      if ((error as { inputAttempted?: boolean }).inputAttempted === true) {
+        return { ok: false, sessionName, outcome: "failed", inputPhase: "attempted", reason: (error as { code?: string }).code ?? "delivery_indeterminate",
+          error: `A text write to '${sessionName}' was issued, but its result was lost: ${(error as Error).message}` };
+      }
       return { ok: false, sessionName, sent: false, reason: (error as { code?: string }).code ?? "guard_unavailable", error: (error as Error).message };
     }
   }
@@ -2336,6 +2353,7 @@ export class SessionTransport {
         reason: preWait.reason,
         error: preWait.error,
         sent: false,
+        inputPhase: "not_reached",
         activity: preWait.activity,
         waitedMs: preWait.waitedMs,
         attempts: preWait.attempts,
@@ -2570,6 +2588,7 @@ export class SessionTransport {
           reason: waitResult.reason,
           error: waitResult.error,
           sent: false,
+          inputPhase: "not_reached",
           ...waitEvidence,
         };
       }
@@ -2626,6 +2645,7 @@ export class SessionTransport {
             reason: rewait.reason,
             error: rewait.error,
             sent: false,
+            inputPhase: "not_reached",
             ...waitEvidence,
           };
         }
@@ -2657,6 +2677,7 @@ export class SessionTransport {
             ok: false,
             sessionName,
             sent: false,
+            inputPhase: "not_reached",
             reason: late.reason,
             error: late.error,
             activity: recheck,
@@ -2789,74 +2810,93 @@ export class SessionTransport {
 
     // 3. Deliver ordinary messages as paste, audited prompt answers as key input.
     if (observed) observed.sentHash = hashSentText(text);
+    // Set once the text write has been handed to the adapter: from then on a throw is not "nothing sent".
+    let writeIssued = false;
+    const tagIssued = (error: unknown): never => {
+      if (writeIssued && error && typeof error === "object") (error as { inputAttempted?: boolean }).inputAttempted = true;
+      throw error;
+    };
     const textResult = await this.runStage(
       "session_transport.send_text",
       () => {
         opts?.beforeWrite?.();
+        writeIssued = true;
         if (promptOverride) return this.tmuxAdapter.sendText(sessionName, text, opts?.beforeWrite, { bracketed: false });
         return opts?.beforeWrite ? this.tmuxAdapter.sendText(sessionName, text, opts.beforeWrite) : this.tmuxAdapter.sendText(sessionName, text);
       },
       (result) => result.ok ? "ok" : "failed",
-    );
+    ).catch(tagIssued);
     if (!textResult.ok) {
-      const policyRefusal = textResult.code.startsWith("draft_");
+      // A draft refusal is the guard holding the write before any input; it is not an attempted write.
+      const policyRefusal = typeof textResult.code === "string" && textResult.code.startsWith("draft_");
       return observe({
         ok: false,
         sessionName,
         reason: policyRefusal ? textResult.code : "send_failed",
         outcome: "failed",
+        ...(policyRefusal ? {} : { inputPhase: "attempted" as const }),
         error: `Failed to send text to '${sessionName}': ${textResult.message}`,
         ...(waitMode || policyRefusal ? { sent: false, ...waitEvidence } : {}),
       });
     }
     try { opts?.onInputEffect?.("pasted"); } catch { /* Observation cannot change a completed paste. */ }
 
-    // 4. Wait 200ms (spike-proven delay)
-    await this.sleep(200);
-
-    // With transport.verify_input_box on, one bounded read of the input box and its pane process before
-    // Enter (a 500 ms budget after the 200 ms wait). It only reports: nothing here decides whether Enter is sent.
-    // The seat is read from the existing --verify capture taken before the paste (the whole screen); no new read.
+    // From the successful paste to Enter the text may sit in the seat's input. Any throw in this span is
+    // tagged inputWritten, so no caller reports it as unsent; a step added here later stays covered.
     let boxBefore: { seat: SeatReading; reading: InputBoxReading; pid: number | null; pane: string | null } | null = null;
-    if (inputBoxRuntime && !promptOverride) {
-      const read = await this.readWithinDeadline("session_transport.input_box_capture", () => Promise.all([
-        this.tmuxAdapter.getPanePid(sessionName).catch(() => null),
-        this.tmuxAdapter.capturePaneContent(sessionName, 30).catch(() => null),
-      ]));
-      boxBefore = { seat: readSeatBeforePaste(preVerifyContent, inputBoxRuntime, sessionName),
-        reading: readInputBox(read?.[1] ?? null, inputBoxRuntime, text), pid: read?.[0] ?? null, pane: read?.[1] ?? null };
-    }
+    let submitResult;
+    let enterIssued = false; // set as the Enter key is handed to the adapter
+    try {
+      // 4. Wait 200ms (spike-proven delay)
+      await this.sleep(200);
 
-    if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
-
-    if (promptOverride) {
-      const pane = await this.runStage("session_transport.prompt_override_pre_submit_capture",
-        () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
-      if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
-      if (!promptAnswerStaged(pane, text, runtime)) {
-        return observe({ ok: true, sessionName, sent: true, verified: false, outcome: "rendered-unconfirmed", promptInteraction: "unverified",
-          ...(inputBoxRuntime ? { inputBox: INPUT_BOX_UNCHECKED } : {}),
-          warning: [sendAdvisory, "prompt-override: answer sent as unbracketed input; submission unverified. No trailing Enter: the complete answer is not visibly staged (it may have been consumed, the prompt changed, or observation is unavailable)."].filter(Boolean).join(" ") });
+      // With transport.verify_input_box on, one bounded read of the input box and its pane process before
+      // Enter (a 500 ms budget after the 200 ms wait). It only reports: nothing here decides whether Enter is sent.
+      // The seat is read from the existing --verify capture taken before the paste (the whole screen); no new read.
+      if (inputBoxRuntime && !promptOverride) {
+        const read = await this.readWithinDeadline("session_transport.input_box_capture", () => Promise.all([
+          this.tmuxAdapter.getPanePid(sessionName).catch(() => null),
+          this.tmuxAdapter.capturePaneContent(sessionName, 30).catch(() => null),
+        ]));
+        boxBefore = { seat: readSeatBeforePaste(preVerifyContent, inputBoxRuntime, sessionName),
+          reading: readInputBox(read?.[1] ?? null, inputBoxRuntime, text), pid: read?.[0] ?? null, pane: read?.[1] ?? null };
       }
-      sendAdvisory = [sendAdvisory, "prompt-override: answer sent as unbracketed input; Enter submitted the complete still-staged answer."].filter(Boolean).join(" ");
-    }
 
-    // 5. Submit (Enter)
-    const submitResult = await this.runStage(
-      "session_transport.submit",
-      () => { opts?.beforeWrite?.(); return opts?.beforeWrite ? this.tmuxAdapter.sendKeys(sessionName, ["Enter"], opts.beforeWrite) : this.tmuxAdapter.sendKeys(sessionName, ["Enter"]); },
-      (result) => result.ok ? "ok" : "failed",
-    );
-    if (!submitResult.ok) {
-      const policyRefusal = submitResult.code.startsWith("draft_");
-      return observe({
-        ok: false,
-        sessionName,
-        reason: policyRefusal ? submitResult.code : "submit_failed",
-        outcome: "failed",
-        error: `Text is visible in '${sessionName}' but was not submitted (Enter failed). The agent may need manual attention.`,
-        ...(waitMode || policyRefusal ? { sent: true, ...waitEvidence } : {}),
-      });
+      if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
+
+      if (promptOverride) {
+        const pane = await this.runStage("session_transport.prompt_override_pre_submit_capture",
+          () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
+        if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
+        if (!promptAnswerStaged(pane, text, runtime)) {
+          return observe({ ok: true, sessionName, sent: true, verified: false, outcome: "rendered-unconfirmed", promptInteraction: "unverified",
+            ...(inputBoxRuntime ? { inputBox: INPUT_BOX_UNCHECKED } : {}),
+            warning: [sendAdvisory, "prompt-override: answer sent as unbracketed input; submission unverified. No trailing Enter: the complete answer is not visibly staged (it may have been consumed, the prompt changed, or observation is unavailable)."].filter(Boolean).join(" ") });
+        }
+        sendAdvisory = [sendAdvisory, "prompt-override: answer sent as unbracketed input; Enter submitted the complete still-staged answer."].filter(Boolean).join(" ");
+      }
+
+      // 5. Submit (Enter)
+      submitResult = await this.runStage(
+        "session_transport.submit",
+        () => { opts?.beforeWrite?.(); enterIssued = true; return opts?.beforeWrite ? this.tmuxAdapter.sendKeys(sessionName, ["Enter"], opts.beforeWrite) : this.tmuxAdapter.sendKeys(sessionName, ["Enter"]); },
+        (result) => result.ok ? "ok" : "failed",
+      );
+      if (!submitResult.ok) {
+        const policyRefusal = typeof submitResult.code === "string" && submitResult.code.startsWith("draft_");
+        return observe({
+          ok: false,
+          sessionName,
+          reason: policyRefusal ? submitResult.code : "submit_failed",
+          outcome: "failed",
+          inputPhase: "written",
+          error: `Text is in '${sessionName}', but the Enter reported a failure, so the submission outcome is unconfirmed. The agent may need manual attention.`,
+          ...(waitMode || policyRefusal ? { sent: true, ...waitEvidence } : {}),
+        });
+      }
+    } catch (error) {
+      if (error && typeof error === "object") Object.assign(error, { inputWritten: true, enterAttempted: enterIssued });
+      throw error;
     }
     try { opts?.onInputEffect?.("submitted"); } catch { /* Observation cannot change a completed submission. */ }
 
