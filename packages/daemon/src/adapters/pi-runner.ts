@@ -386,12 +386,17 @@ export class RunnerCore {
   private ready = false;
   private assistantErrorShown = false;
   private started = false;
-  /** OMP attention (runtime_error | permission_prompt) that must survive the
-   *  end of the turn; cleared by the next agent_start. */
-  private attention: "runtime_error" | "permission_prompt" | null = null;
+  /** OMP failures/approvals survive the turn until agent_start, except typed
+   *  transient assistant failures, released only when agent_end completes. */
+  private attention: "runtime_error" | "permission_prompt" | "transient_turn_error" | null = null;
   /** Whether the last activity posted is that attention. Later activity in
    *  the same turn (a tool call after a denied approval) replaces it. */
   private attentionIsLatest = false;
+  // Native OMP retry summaries have no message/status. Correlate only within
+  // the announced attempt, using the latest typed assistant failure's exact
+  // diagnostic as an identity check, never as a transient-error classifier.
+  private retryAttempt: number | null = null;
+  private retryFailure: string | null = null;
   /** Set once the daemon confirms it persisted the resume token. */
   private identityPersisted = false;
   private identityInFlight = false;
@@ -687,14 +692,15 @@ export class RunnerCore {
     }, () => { /* best-effort: resent on the next refresh */ });
   }
 
-  private raiseAttention(subtype: "runtime_error" | "permission_prompt"): void {
-    // Runtime failures outrank denied approvals. Only emit when the visible
-    // attention changes or intervening activity replaced it.
-    const next = this.attention === "runtime_error" ? this.attention : subtype;
+  private raiseAttention(subtype: "runtime_error" | "permission_prompt" | "transient_turn_error"): void {
+    // Persistent failures and denied approvals outrank transient failures.
+    // Only emit when attention changes or intervening activity replaced it.
+    const next = this.attention === "runtime_error" ? this.attention
+      : this.attention === "permission_prompt" && subtype === "transient_turn_error" ? this.attention : subtype;
     if (this.attention === next && this.attentionIsLatest) return;
     this.attention = next;
     this.attentionIsLatest = true;
-    this.io.postActivity(this.activityPayload("Notification", next));
+    this.io.postActivity(this.activityPayload("Notification", next === "transient_turn_error" ? "runtime_error" : next));
   }
 
   private clearAttention(): void {
@@ -729,8 +735,16 @@ export class RunnerCore {
 
     if (this.runtime === "omp") {
       if (event.type === "agent_start") this.clearAttention();
+      if (event.type === "agent_start" || event.type === "turn_start"
+        || (event.type === "message_start" && message?.role === "assistant")
+        || ((event.type === "message_end" || event.type === "turn_end")
+          && message?.role === "assistant" && message.stopReason !== "error")) this.retryFailure = null;
+      if (event.type === "auto_retry_start") {
+        this.retryAttempt = Number.isInteger(event.attempt) && (event.attempt as number) > 0 ? event.attempt as number : null;
+        this.retryFailure = null;
+      }
       // A successful automatic retry supersedes the failed attempt.
-      if (event.type === "auto_retry_start" && this.attention === "runtime_error") this.clearAttention();
+      if (event.type === "auto_retry_start" && (this.attention === "runtime_error" || this.attention === "transient_turn_error")) this.clearAttention();
       // Some paths omit agent_start; turn_start still opens a new turn.
       if (event.type === "turn_start") this.assistantErrorShown = false;
     }
@@ -758,11 +772,34 @@ export class RunnerCore {
         this.io.mirrorLine(mapped.errorNotice);
       }
       this.assistantErrorShown = true;
-      // OMP still ends the turn normally after a model failure; the operator
-      // has to act, so the seat shows attention rather than idle.
-      if (this.runtime === "omp") this.raiseAttention("runtime_error");
+      // Only typed, explicitly transient HTTP failures may release the send
+      // guard at agent_end. Unknown/auth/configuration failures stay attention;
+      // diagnostic prose is never used to decide whether a retry is safe.
+      const status = message?.errorStatus;
+      const transient = (event.type === "message_end" || event.type === "turn_end")
+        && message?.role === "assistant" && message.stopReason === "error"
+        && typeof status === "number" && [408, 429, 500, 502, 503, 504, 529].includes(status);
+      if (this.runtime === "omp") {
+        const retrySummary = event.type === "auto_retry_end" && event.success === false
+          && this.retryAttempt !== null && event.attempt === this.retryAttempt
+          && this.retryFailure !== null && event.finalError === this.retryFailure
+          && event.message === undefined && event.error === undefined;
+        if (event.type !== "auto_retry_end") {
+          this.retryFailure = transient && this.retryAttempt !== null && typeof message?.errorMessage === "string"
+            && message.errorMessage.length > 0 ? message.errorMessage : null;
+        } else if (!retrySummary) {
+          this.retryFailure = null;
+        }
+        this.raiseAttention(transient || retrySummary ? "transient_turn_error" : "runtime_error");
+      }
+    }
+    if (this.runtime === "omp" && (event.type === "auto_retry_end" && event.success === true
+      || event.type === "agent_end" && event.isTerminal !== false)) {
+      this.retryAttempt = null;
+      this.retryFailure = null;
     }
     if (!mapped.activity) return;
+    if (event.type === "agent_end" && this.attention === "transient_turn_error") this.clearAttention();
     if (mapped.activity.hookEvent === "Stop" && this.attention) {
       // The turn ended, but the operator still has to act. Drop the Stop; if
       // later activity replaced the attention, restore it as the final state.
