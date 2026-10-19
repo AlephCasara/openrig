@@ -260,11 +260,12 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
 
 function seatLifecycleStatus(code: string): 400 | 404 | 409 | 500 | 502 {
   if (code === "seat_ref_required" || code === "missing_model" || code === "missing_reason" || code === "fresh_required"
-    || code === "missing_effort" || code === "invalid_effort" || code === "invalid_policy") return 400;
+    || code === "missing_effort" || code === "invalid_effort" || code === "invalid_policy"
+    || code === "missing_cwd" || code === "invalid_cwd") return 400;
   if (code === "seat_not_found") return 404;
   if (code === "tmux_probe_failed") return 502;
   if (code === "launch_unavailable" || code === "runtime_adapter_missing" || code === "launch_failed" || code === "startup_failed"
-    || code === "effort_unavailable") return 500;
+    || code === "effort_unavailable" || code === "cwd_check_failed" || code === "cwd_persistence_failed") return 500;
   // seat_ambiguous / session_live / session_not_live / no_session / claimed_session /
   // nothing_to_clean — state conflicts, not client syntax errors.
   return 409;
@@ -304,6 +305,18 @@ seatRoutes.post("/set-model/:seatRef", async (c) => {
   });
   if (result.ok) return c.json(result);
   return c.json(result, seatLifecycleStatus(result.code));
+});
+
+seatRoutes.post("/set-cwd/:seatRef", async (c) => {
+  const value: unknown = await c.req.json().catch(() => null);
+  const body = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const result = await seatLifecycleService(c).setCwd({
+    seatRef: c.req.param("seatRef"),
+    cwd: typeof body.cwd === "string" ? body.cwd : "",
+    reason: typeof body.reason === "string" ? body.reason : "",
+    operator: transportSenderSession(c) ?? (typeof body.operator === "string" ? body.operator : null),
+  });
+  return c.json(result, result.ok ? 200 : seatLifecycleStatus(result.code));
 });
 
 // OPR.0.7.0.7 — save (or, with clear: true, remove) one seat's effort choice for its next

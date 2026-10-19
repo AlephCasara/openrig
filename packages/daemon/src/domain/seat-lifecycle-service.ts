@@ -21,6 +21,11 @@ import { observeSolePane } from "./pane-binding-observation.js";
 import { createHash } from "node:crypto";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { validateNativePermissionSelection, unresolvedClaudePermissionModes } from "./native-permission-selection.js";
+import fs from "node:fs";
+import path from "node:path";
+import { resolveConcreteHint, type NodeBinding } from "./runtime-adapter.js";
+import { ProjectionManifestStore } from "./projection-manifest-store.js";
+import { planCwdPreparation } from "./seat-cwd-preparation.js";
 import { resolvePermissionPolicyAttachment, validatePermissionPolicyRef } from "./permission-policy/policy-ref.js";
 import type { ArbitratedSeatState } from "./activity-taxonomy.js";
 import type { PaneCutoverTiming } from "./pane-cutover.js";
@@ -37,7 +42,7 @@ import {
   CodexInPlaceRestart, type InPlaceCodexLauncher, type InPlaceRestartIo, type InPlaceRestartRefusal,
   type InPlaceRestartReport, type InPlaceRestartTarget, type InPlaceVerifyResult,
 } from "./seat-restart-in-place.js";
-import { seatAdapter } from "../adapters/agent-app-runtime-adapter.js";
+import { AgentAppRuntimeAdapter, seatAdapter } from "../adapters/agent-app-runtime-adapter.js";
 import { sessionAgentAppSelect } from "./session-registry.js";
 
 /**
@@ -92,6 +97,12 @@ export interface SeatRefusal {
     | "seat_not_found"
     | "seat_ambiguous"
     | "missing_model"
+    | "missing_cwd"
+    | "invalid_cwd"
+    | "cwd_check_failed"
+    | "cwd_persistence_failed"
+    | "cwd_configuration_changed"
+    | "cwd_destination_conflict"
     | "missing_reason"
     | "permission_selection_refused"
     | "no_session"
@@ -136,6 +147,18 @@ export interface SeatDescriptor {
 export type SetModelResult =
   | { ok: true; seat: SeatDescriptor; from: string | null; to: string; changed: boolean }
   | SeatRefusal;
+
+export type SetCwdResult =
+  | { ok: true; seat: SeatDescriptor; from: string | null; to: string; changed: boolean;
+      effect: "next_launch"; warnings: string[] }
+  | (SeatRefusal & { warnings?: string[] });
+
+interface SetCwdInput {
+  seatRef: string;
+  cwd: string;
+  reason: string;
+  operator?: string | null;
+}
 
 export type SetPolicyResult =
   | { ok: true; seat: SeatDescriptor; from: string | null; to: string; launchPosture: "floor" | "full_bypass" | "auto"; changed: boolean; effect: string }
@@ -309,6 +332,113 @@ export class SeatLifecycleService {
     if (persisted) this.eventBus.notifySubscribers(persisted);
 
     return { ok: true, seat, from, to: model, changed: true };
+  }
+
+  /**
+   * Save an existing seat's launch directory for its next fresh launch or rebuild handover, keeping its identity,
+   * address, queue and history. Like set-model it validates, then persists the cwd and an audited event in one
+   * transaction. Before that, set-cwd's read-only preflight policy refuses the change when the new directory holds an
+   * operator-edited, unrecorded-and-different or doubly sourced copy that launch would place there. It creates the
+   * folder and writes no startup files: launch does that, as it does today. The running occupant keeps its directory
+   * until it's relaunched.
+   */
+  async setCwd(input: SetCwdInput): Promise<SetCwdResult> {
+    const required = this.requireReason(input.reason);
+    if (required) return required;
+    if (!input.cwd?.trim()) return { ok: false, code: "missing_cwd", message: "An absolute working directory is required (--cwd)." };
+    if (!path.isAbsolute(input.cwd) || input.cwd.includes("\0")) {
+      return { ok: false, code: "invalid_cwd", message: "The working directory must be an absolute path on the daemon's host." };
+    }
+    let to = path.resolve(input.cwd);
+    if (to === path.parse(to).root) {
+      return { ok: false, code: "invalid_cwd", message: "Choose a project directory, not a filesystem root, for managed startup files." };
+    }
+    const resolved = this.resolveSeat(input.seatRef);
+    if ("code" in resolved) return resolved;
+    const seat = this.describe(resolved);
+    const node = this.rigRepo.getRig(seat.rigId)?.nodes.find(candidate => candidate.id === seat.nodeId);
+    if (!node) return { ok: false, code: "seat_not_found", message: "The seat no longer exists.", guidance: SEAT_LOOKUP_GUIDANCE };
+    const from = node.cwd;
+    try {
+      fs.mkdirSync(to, { recursive: true });
+      to = fs.realpathSync(to);
+      if (to === path.parse(to).root || !fs.statSync(to).isDirectory()) throw new Error("Destination must be a project directory.");
+    } catch (error) {
+      return { ok: false, code: "invalid_cwd", message: `Cannot use the requested working directory: ${(error as Error).message}` };
+    }
+    const startup = this.readStartupContext(node.id, to);
+    if (!startup.ok) return startup.refusal;
+    if (!node.runtime || startup.context.runtime !== node.runtime) {
+      return { ok: false, code: "startup_context_runtime_mismatch", message: "The saved startup context belongs to a different runtime." };
+    }
+    // Resolved as launch resolves it, so a recorded community agent app finds its adapter too.
+    const adapter = seatAdapter(this.runtimeAdapters, node.runtime, this.latestSession(node.id)?.agent_app);
+    if (!adapter) return { ok: false, code: "runtime_adapter_missing", message: "The configured runtime adapter is unavailable." };
+
+    const warnings: string[] = [];
+    // The filesystem startup files the next fresh launch would deliver (never send_text or actions), with legacy auto
+    // hints resolved, for the read-only destination check.
+    const files: ResolvedStartupFile[] = [];
+    // A community agent app takes no startup files at launch (its adapter delivers none), so there's nothing to check.
+    const takesStartupFiles = !(adapter instanceof AgentAppRuntimeAdapter);
+    for (const file of takesStartupFiles ? startup.context.resolvedStartupFiles : []) {
+      if (!file.appliesOn.includes("fresh_start") || file.deliveryHint === "send_text") continue;
+      try {
+        const hint = file.deliveryHint === "auto"
+          ? resolveConcreteHint(file.path, fs.readFileSync(file.absolutePath, "utf8")) : file.deliveryHint;
+        if (hint !== "send_text") files.push({ ...file, deliveryHint: hint });
+      } catch (error) {
+        const detail = `Startup file ${file.path}: ${(error as Error).message}`;
+        if (file.required) return { ok: false, code: "cwd_check_failed", message: detail, warnings };
+        warnings.push(detail);
+      }
+    }
+    const oldBinding = this.sessionRegistry.getBindingForNode(node.id);
+    const binding: NodeBinding = {
+      id: oldBinding?.id ?? `cwd:${node.id}`, nodeId: node.id,
+      attachmentType: oldBinding?.attachmentType ?? "tmux",
+      tmuxSession: oldBinding?.tmuxSession ?? deriveCanonicalFromEntry(resolved.entry),
+      tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+      updatedAt: oldBinding?.updatedAt ?? new Date().toISOString(), cwd: to,
+    };
+    const inspect = `Inspect the configured directory with: rig seat status ${input.seatRef}`;
+    try {
+      const check = planCwdPreparation({ ...startup.context.plan, cwd: to }, files, binding, adapter, new ProjectionManifestStore(this.db));
+      warnings.push(...check.warnings);
+      if (check.conflicts.length) {
+        warnings.push(...check.conflicts.map(copy => `Protected destination file: ${copy.targetPath}`));
+        return { ok: false, code: "cwd_destination_conflict", warnings,
+          message: "The new directory holds files set-cwd's preflight policy protects; no startup file was written and the cwd was not changed.",
+          guidance: "Use a clean destination, or inspect and move or merge the reported files before retrying." };
+      }
+    } catch (error) {
+      return { ok: false, code: "cwd_check_failed", message: `The new directory couldn't be checked; the cwd was not changed: ${(error as Error).message}`, warnings };
+    }
+
+    let persisted: PersistedEvent | null = null;
+    const changed = from !== to;
+    try {
+      const refusal = this.db.transaction((): SeatRefusal | null => {
+        // Another writer (an import, another connection) must not be silently overwritten.
+        const current = this.resolveSeat(input.seatRef);
+        const currentStartup = this.readStartupContext(node.id, to);
+        if ("code" in current || current.nodeId !== node.id || current.entry.cwd !== from
+          || current.entry.runtime !== node.runtime || !currentStartup.ok || currentStartup.context.hash !== startup.context.hash) {
+          return { ok: false, code: "cwd_configuration_changed", message: "The seat's configuration changed while its new directory was checked; the cwd was not changed.", guidance: inspect };
+        }
+        if (changed) {
+          if (!this.rigRepo.setNodeCwd(node.id, to, from)) throw new Error("The seat's saved working directory changed.");
+          persisted = this.eventBus.persistWithinTransaction({ type: "node.cwd_changed", rigId: seat.rigId,
+            nodeId: node.id, logicalId: seat.logicalId, from, to, reason: input.reason.trim(), operator: input.operator ?? null });
+        }
+        return null;
+      })();
+      if (refusal) return { ...refusal, warnings };
+    } catch (error) {
+      return { ok: false, code: "cwd_persistence_failed", message: `The working directory was not changed: ${(error as Error).message}`, guidance: inspect, warnings };
+    }
+    if (persisted) this.eventBus.notifySubscribers(persisted);
+    return { ok: true, seat, from, to, changed, effect: "next_launch", warnings };
   }
 
   /** OPR.0.7.0.7 — save one seat's effort for its next managed continuation. Like set-model it

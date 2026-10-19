@@ -39,6 +39,7 @@ interface SeatStatusResponse {
     };
   };
   session_status: string | null;
+  launch_cwd?: string | null;
   session_reason?: string | null;
   startup_status: string | null;
   occupant_lifecycle: string;
@@ -160,6 +161,7 @@ function printHuman(status: SeatStatusResponse): void {
   console.log(`Rig: ${status.rig_name}`);
   console.log(`Logical ID: ${status.logical_id}`);
   console.log(`Current occupant: ${display(status.current_occupant)}`);
+  if (status.launch_cwd !== undefined) console.log(`Working directory for future launches: ${display(status.launch_cwd)}`);
   if (status.typingGuard) {
     const g = status.typingGuard;
     const mode = g.effectiveMode ?? (g.effective ? "on" : "off");
@@ -526,7 +528,7 @@ identity remains unverified; a version number alone cannot clear it.
   // Thin CLI over the daemon's SeatLifecycleService; refusals print message +
   // guidance + match list exactly as the daemon named them.
   const runLifecycleVerb = async (
-    path: "set-model" | "set-effort" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify",
+    path: "set-model" | "set-cwd" | "set-effort" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify",
     seat: string,
     body: Record<string, unknown>,
     opts: { json?: boolean },
@@ -547,7 +549,7 @@ identity remains unverified; a version number alone cannot clear it.
           ? await client.post<Record<string, unknown>>(route, body, { timeoutMs: 10_000 })
           : await client.post<Record<string, unknown>>(route, body);
     } catch (err) {
-      if ((path !== "launch" && path !== "launch-plan" && path !== "continue" && path !== "restart") || !(err instanceof DaemonTimeoutError)) throw err;
+      if ((path !== "launch" && path !== "launch-plan" && path !== "continue" && path !== "restart" && path !== "set-cwd") || !(err instanceof DaemonTimeoutError)) throw err;
       const error = path === "restart" ? {
         ok: false as const,
         code: "restart_outcome_unknown",
@@ -556,9 +558,9 @@ identity remains unverified; a version number alone cannot clear it.
         guidance: `Check the outcome before running it again: rig seat restart ${seat} --keep-conversation --plan refuses with restart_in_progress while it is still running, then shows its result as lastRestart.`,
       } : {
         ok: false as const,
-        code: path === "launch-plan" ? "launch_plan_timeout" : `${path}_outcome_unknown`,
+        code: path === "launch-plan" ? "launch_plan_timeout" : `${path.replaceAll("-", "_")}_outcome_unknown`,
         status: "unknown",
-        message: path === "launch-plan" ? "The read-only launch preview timed out; no launch was requested." : `The CLI timed out waiting for the daemon; the ${path === "continue" ? "continuation" : "launch"} may still be in progress.`,
+        message: path === "launch-plan" ? "The read-only launch preview timed out; no launch was requested." : `The CLI timed out waiting for the daemon; the ${path === "set-cwd" ? "directory change" : path === "continue" ? "continuation" : "launch"} may still be in progress.`,
         guidance: path === "launch-plan" ? "Retry the preview when the daemon responds." : `Check the outcome before retrying: rig seat status ${seat}`,
       };
       if (opts.json) console.log(JSON.stringify(error, null, 2));
@@ -578,7 +580,7 @@ identity remains unverified; a version number alone cannot clear it.
       return;
     }
     if (restartFailed) process.exitCode = 1;
-    if (path === "launch" || path === "launch-plan" || path === "continue" || path === "restart" || path === "restart-plan") {
+    if (path === "launch" || path === "launch-plan" || path === "continue" || path === "restart" || path === "restart-plan" || path === "set-cwd") {
       for (const warning of (res.data["warnings"] as string[] | undefined) ?? []) console.warn(`Warning: ${warning}`);
     }
     if (res.status >= 400) {
@@ -704,6 +706,57 @@ resume/successor launch reads it at call time. Examples:
         }
         console.log(`Model for ${s?.logicalId}@${s?.rigName}: ${String(data["from"] ?? "none")} -> ${String(data["to"])} (audited).`);
         console.log("The next managed resume/successor launch composes the new model.");
+      });
+    });
+
+  cmd
+    .command("set-cwd")
+    .argument("<seat>", "Canonical session name or logical seat ref")
+    .requiredOption("--cwd <directory>", "Absolute working directory on the daemon's host; created if missing")
+    .requiredOption("--reason <text>", "Audit reason for the future launch directory")
+    .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
+    .option("--json", "JSON output for agents")
+    .description("Save an existing seat's working directory for its next fresh launch or rebuild handover")
+    .addHelpText("after", `
+Saves the directory (and an audit event) for this seat's next launch. The seat's
+identity, address, queue and history are kept. set-cwd creates the folder if it's
+missing and writes nothing else there: the next launch writes the startup files,
+as it does today. Its preflight policy checks the resource copies and startup
+skills that launch would place there, as they are now: an operator-edited file,
+an unrecorded file with different content, or two sources for one destination
+refuses the change, naming those paths. It's a point-in-time check, not a
+guarantee against later changes; at adoption, launch applies its own policy.
+(A refusal may leave the new folder created; nothing else changes.)
+
+The saved directory doesn't move the running process. Adopt it with
+  rig seat launch <seat> --fresh --stop --reason <text>   (a blank conversation) or
+  rig seat handover <seat> --source rebuild --reason <text>   (carries durable context)
+Until then, background work can already use the saved directory. For a running
+Claude seat, for example, collector provisioning writes .openrig/context-collector.cjs
+and merges .claude/settings.local.json there (under its existing preservation
+rules), and managed compaction, manual or automatic, asks the seat to write its
+restore map there, which may be outside its current workspace, where a seat
+without bypass permissions may meet a write prompt. Adopting promptly is guidance; it doesn't protect against a poll or
+a compaction that runs before your next command.
+Before adopting, don't rig down/rig up or hand over by fork: those resume the
+existing conversation in the saved directory, and Claude keeps conversations per
+project directory, so a resume there may not find it (not run natively).
+rig seat restart --keep-conversation (Codex) isn't adoption: it respawns in the
+directory it observes from the running process.
+
+Files in the old directory are left as they are; other seats may still use them.
+Example:
+  rig seat set-cwd planning-lead@project --cwd /work/project/seats/planning-lead --reason "isolate planning"`)
+    .action(async (seat: string, opts: { cwd: string; reason: string; operator?: string; json?: boolean }) => {
+      await runLifecycleVerb("set-cwd", seat, { cwd: opts.cwd, reason: opts.reason, operator: opts.operator }, opts, data => {
+        const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
+        console.log(`Launch directory for ${s?.logicalId}@${s?.rigName}: ${String(data["to"])}${data["changed"] === false ? " (already selected)" : " (audited)"}.`);
+        console.log("set-cwd wrote nothing there but the folder: the next fresh launch or rebuild handover writes its startup files.");
+        console.log("The running process keeps its current directory. Adopt the new one promptly with either:");
+        console.log(`  rig seat launch ${seat} --fresh --stop --reason <text>   (a blank conversation)`);
+        console.log(`  rig seat handover ${seat} --source rebuild --reason <text>   (carries durable context)`);
+        console.log("Until then, background work can already use the saved directory, such as a Claude seat's managed compaction (see rig seat set-cwd --help).");
+        console.log("Files in the previous directory are left as they are; other seats may still use them.");
       });
     });
 

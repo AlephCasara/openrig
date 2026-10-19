@@ -881,6 +881,7 @@ name is not resolved within `<rig>`.
 | `rig seat clear-attention <session>` | — | `--reason <text>`<br>`--json` |
 | `rig seat set-permissions <seat>` | — | `--mode <mode>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat set-model <seat>` | — | `--model <id>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
+| `rig seat set-cwd <seat>` | — | `--cwd <directory>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat launch <seat>` | — | `--fresh` **required**<br>`--reason <text>` **required**<br>`--stop`<br>`--operator <address>`<br>`--json` |
 | `rig seat continue <seat>` | — | `--json` |
 | `rig seat stop <seat>` | — | `--reason <text>` **required**<br>`--operator <address>`<br>`--json` |

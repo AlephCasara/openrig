@@ -517,6 +517,13 @@ export class RigRepository {
     return result.changes > 0;
   }
 
+  /** Saves a seat's launch directory only if it's still `expectedCwd`. The lifecycle service checks the new
+   *  directory, read-only, before calling this; it writes no startup files. */
+  setNodeCwd(nodeId: string, cwd: string, expectedCwd: string | null): boolean {
+    return this.db.prepare("UPDATE nodes SET cwd = ? WHERE id = ? AND cwd IS ?")
+      .run(cwd, nodeId, expectedCwd).changes > 0;
+  }
+
   setNodeEffort(nodeId: string, effort: string): boolean {
     if (!this.hasNodeColumn("effort")) return false;
     const result = this.db

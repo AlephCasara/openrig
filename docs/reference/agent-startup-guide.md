@@ -282,6 +282,68 @@ must inspect `launchable === true` before deciding to execute. Request failures 
 Execution always resolves and checks the current state again. An older daemon without the preview
 endpoint refuses the request; the CLI never falls back to executing a launch.
 
+### Change an existing seat's working directory
+
+Editing `cwd` in an already applied RigSpec doesn't update an existing seat's saved launch directory. Use `set-cwd` to
+save a new one for the seat's next launch:
+
+```sh
+rig seat set-cwd planning-lead@project \
+  --cwd /work/project/seats/planning-lead --reason "isolate planning"
+rig seat status planning-lead@project
+```
+
+**The path:** it must be absolute **on the daemon's host**. OpenRig creates a missing directory, resolves symlinks to
+its real path, and refuses a filesystem root.
+
+**What it saves:** the directory and a `node.cwd_changed` audit event (from, to, reason, operator), together, in one
+transaction. The seat's node, canonical address, queue, session history and skill selection stay as they are.
+`rig seat status` shows **Working directory for future launches** (`launch_cwd` in JSON). That's saved configuration,
+not where the running process is.
+
+**What it writes:** it creates the folder if it's missing, and writes nothing else there. The seat's next fresh launch or
+rebuild handover writes its startup files there, as launch does today.
+
+**`set-cwd`'s preflight policy:** before saving, it reads, without writing, the enumerated resource copies (including
+nested plugin files) and startup skills that launch would place in the new directory, at their actual destinations,
+as they are at that moment. It's a point-in-time check, not a global overwrite guarantee or protection against later
+changes; at adoption, launch applies its own policy. (The commit's re-check covers the saved startup configuration,
+not the destination's file contents.)
+- **Refused, with the protected paths named (`cwd_destination_conflict`):** a file there that an operator edited, an
+  unrecorded file with different content, or two sources for one destination. That's stricter than launch, which
+  overwrites an unrecorded differing file with a warning; the refusal is deliberate, while the occupant still runs.
+- **What to do:** use a clean destination, or move or merge those files, then retry.
+- **Not checked:** managed guidance blocks and native configuration merges keep the adapter's policy at launch, and
+  launch-owned files such as `.openrig/context-collector.cjs` are written by launch as always.
+- **An agent app** takes no startup files, so none are checked for it.
+
+**The running occupant keeps its current directory.** Adopt the new one with:
+- `rig seat launch <seat> --fresh --stop --reason <text>`, which starts a blank conversation; or
+- `rig handover <seat> --source rebuild --reason <text>`, which carries durable context.
+
+**Adopt it promptly.** The saved directory doesn't move the running process, but background work can use it before
+adoption. Saved configuration isn't the live process's directory, and these examples aren't the only consumers. For a
+running Claude seat:
+- **Collector provisioning** writes `.openrig/context-collector.cjs` and merges `.claude/settings.local.json` in the
+  saved directory, under its existing preservation rules.
+- **Managed compaction,** manual (`POST /api/compaction/trigger`) or automatic, asks the seat to write its restore map
+  under it. That may be outside the seat's current workspace, so a seat without bypass permissions may meet a write
+  prompt.
+
+Adopting promptly is guidance. It doesn't protect against a poll or a compaction that runs before your next command.
+
+**Before adopting,** don't `rig down`/`rig up` or hand over by fork. Those resume the existing conversation in the
+saved directory, and Claude keeps conversations per project directory, so a resume there may not find it.
+Cross-directory resume hasn't been run natively; this is the order to follow. `rig seat restart --keep-conversation`
+(Codex) isn't adoption: it respawns in the directory it observes from the running process.
+
+**Failures:** a refusal, missing or malformed saved startup context, or an audit-write failure leaves the prior
+directory saved, and changes no seat, custody or startup file (a refusal may leave the new folder created). A concurrent configuration change is reported, not overwritten. A CLI timeout means the outcome is
+unknown; check `rig seat status` before retrying. Choosing the same directory again records no second event.
+
+**The old directory:** files there are left as they are, since other seats may still use them. The source RigSpec
+declaration isn't changed either; update it separately if a future recreation should use the new directory.
+
 ### The `applies_on` Field
 
 Each startup file and action specifies when it applies:
