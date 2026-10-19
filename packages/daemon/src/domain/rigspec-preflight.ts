@@ -6,7 +6,7 @@ import type { ExecFn } from "../adapters/tmux.js";
 import { runtimeProbeFailure, runtimeProbeTimeout } from "../adapters/preflight-exec.js";
 import { piVersionNotice } from "../adapters/pi-readiness.js";
 import type { LegacyRigSpec as RigSpec, PreflightResult, RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember } from "./types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
-import { deriveSessionName, validateSessionName, validateSessionComponents, VIRTUAL_DOMAIN_TOKENS } from "./session-name.js";
+import { deriveCanonicalSessionName, deriveSessionName, tmuxRenamedSessionError, validateSessionName, validateSessionComponents, VIRTUAL_DOMAIN_TOKENS } from "./session-name.js";
 
 const RUNTIME_COMMANDS: Record<string, string> = {
   "claude-code": "claude --version",
@@ -47,6 +47,9 @@ export class RigSpecPreflight {
       const sessionName = deriveSessionName(spec.name, node.id);
       if (!validateSessionName(sessionName)) {
         errors.push(`Derived session name '${sessionName}' is invalid for node '${node.id}'`);
+      } else {
+        const renamed = tmuxRenamedSessionError(sessionName);
+        if (renamed) errors.push(`${node.id}: ${renamed}`);
       }
     }
 
@@ -68,7 +71,8 @@ export class RigSpecPreflight {
     // tmux session name collision
     for (const node of spec.nodes) {
       const sessionName = deriveSessionName(spec.name, node.id);
-      if (validateSessionName(sessionName)) {
+      // A name tmux would rename is already refused above, and probing it fails ("can't find pane").
+      if (validateSessionName(sessionName) && !tmuxRenamedSessionError(sessionName)) {
         const exists = await this.tmuxAdapter.hasSession(sessionName);
         if (exists) {
           errors.push(`tmux session '${sessionName}' already exists for node '${node.id}'`);
@@ -170,6 +174,7 @@ export interface RigPreflightInput {
   externalQualifiedIds?: Iterable<string>;
   claudeActivityAssets?: { relayPath?: string; manifestPath?: string };
   inheritedPermissionPolicy?: PreflightSpecContext["inheritedPermissionPolicy"];
+  materializeOnly?: PreflightSpecContext["materializeOnly"];
 }
 
 /**
@@ -185,6 +190,9 @@ export interface PreflightSpecContext {
   systemSkills?: string[];
   systemWorldError?: string;
   rigNameOverride?: string;
+  /** True when no session is created after this preflight (materialize-only, `rig adopt`), so
+   *  a session name tmux would rename is not refused: no session is created under it. */
+  materializeOnly?: boolean;
   /** Effective persisted target-rig attachment for structured expansion.
    * Explicit member/fragment refs still win; this is the inherited fallback. */
   inheritedPermissionPolicy?: Pick<
@@ -268,6 +276,7 @@ export async function rigPreflight(input: RigPreflightInput & { exec?: (cmd: str
     skillsRoot: input.skillsRoot,
     rigNameOverride: input.rigNameOverride,
     inheritedPermissionPolicy: input.inheritedPermissionPolicy,
+    materializeOnly: input.materializeOnly,
     exec: input.exec,
     claudeActivityAssets: input.claudeActivityAssets,
   });
@@ -295,6 +304,8 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
       for (const err of nameErrors) {
         errors.push(`${pod.id}.${member.id}: ${err}`);
       }
+      const renamed = nameErrors.length === 0 && !preflightCtx.materializeOnly ? tmuxRenamedSessionError(deriveCanonicalSessionName(pod.id, member.id, effectiveRigName)) : null;
+      if (renamed) errors.push(`${pod.id}.${member.id}: ${renamed}`);
     }
   }
 
