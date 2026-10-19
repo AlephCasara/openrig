@@ -838,6 +838,7 @@ interface RunnerArgs {
   cwd: string;
   launchId: string;
   model?: string;
+  thinking?: string;
   trust: "approve" | "no-approve";
   sessionFile?: string;
   forkRef?: string;
@@ -848,8 +849,11 @@ interface RunnerArgs {
 
 export function parseRunnerArgs(argv: string[]): RunnerArgs {
   const args: Partial<RunnerArgs> & { trust?: "approve" | "no-approve" } = {};
+  // The tokens read as flags; a value, such as a --thinking of "--approval-mode", never counts as one.
+  const flags = new Set<string>();
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]!;
+    flags.add(flag);
     const next = () => {
       const value = argv[++i];
       if (value === undefined) throw new Error(`${flag} requires a value`);
@@ -867,6 +871,7 @@ export function parseRunnerArgs(argv: string[]): RunnerArgs {
       case "--cwd": args.cwd = next(); break;
       case "--launch-id": args.launchId = next(); break;
       case "--model": args.model = next(); break;
+      case "--thinking": args.thinking = next(); break;
       case "--session": args.sessionFile = next(); break;
       case "--fork": args.forkRef = next(); break;
       case "--usage-facts": args.usageFacts = true; break;
@@ -887,10 +892,10 @@ export function parseRunnerArgs(argv: string[]): RunnerArgs {
   if (!args.cwd) throw new Error("--cwd is required");
   if (!args.launchId) throw new Error("--launch-id is required (launch-attempt scoping)");
   if (args.runtime === "omp") {
-    if (!argv.includes("--approval-mode") || argv.some((flag) => flag === "--approve" || flag === "--no-approve")) {
+    if (!flags.has("--approval-mode") || flags.has("--approve") || flags.has("--no-approve")) {
       throw new Error("OMP requires --approval-mode yolo or always-ask, not Pi trust flags");
     }
-  } else if (!args.trust || argv.includes("--approval-mode")) {
+  } else if (!args.trust || flags.has("--approval-mode")) {
     throw new Error("an explicit trust flag is required: --approve or --no-approve");
   }
   if (args.sessionFile && args.forkRef) throw new Error("--session and --fork are mutually exclusive");
@@ -1061,6 +1066,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     sessionsDir: paths.sessionsDir,
     sessionName: args.sessionName,
     model: args.model,
+    thinking: args.thinking,
     trust: args.trust,
     sessionFile: args.sessionFile,
     forkRef: args.forkRef,
