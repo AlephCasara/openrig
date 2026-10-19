@@ -87,10 +87,12 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
   joining as optional, with the effects below. Ask the person yes or no after this short explanation:
   - This adds me as a named member of the team, with my name on messages.
   - In a plain shell, joining writes no files in your project or personal settings.
-  - Inside tmux (from source, not hand-tested), other agents can type into this window, and stopping the team
-    (`rig down`) also closes this tmux session. It can record this session's transcript, and for Claude Code also
-    write `.openrig/context-collector.cjs` and update `.claude/settings.local.json` for the status line, keeping an
-    existing custom status line.
+  - Inside tmux on 0.6.11, my sender and reply address is your existing tmux session name, even a number like `0`.
+    `rig attach --self` returns that address and `rig whoami` confirms it; `--display-name` does not change it.
+  - Inside tmux, other agents can type into this window, and stopping the team (`rig down`) also closes this tmux
+    session (both from source, not hand-tested). Transcript recording and, for Claude Code, writing
+    `.openrig/context-collector.cjs` and `.claude/settings.local.json` for the status line were hand-tested on 0.6.11.
+    Updating an existing `.claude/settings.local.json`, keeping its custom status line, is from source.
   - In a plain shell, other agents reply through the task queue because they can't type into this window, and
     stopping the team leaves this session running.
 
