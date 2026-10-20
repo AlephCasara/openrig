@@ -42,7 +42,7 @@ import { isShellForeground } from "./shell-classifier.js";
 import { observeClaudeDelivery, verifyCodexPaneProcess, type ClaudeDeliveryObservation, type ClaudeResumeRotation, type NativeProcessLister } from "./native-process-lineage.js";
 import type { SlowOperationInstrumentation } from "./slow-op-recorder.js";
 import { hashSentText, type CaptureObserverSink, type CaptureSlot, type ObservationInput, type ObservedBinding } from "./capture-observer.js";
-import { isAttentionRequiredReadinessCode, type NodeBinding, type ReadinessResult } from "./runtime-adapter.js";
+import { isAttentionRequiredReadinessCode, type NodeBinding, type ReadinessOptions, type ReadinessResult } from "./runtime-adapter.js";
 import { getLatestStartupFailedEvent, hasClaudeResumeIdentityWork, isRecoverableStartupFailure } from "./startup-orchestrator.js";
 
 // OPR.0.4.1.10 — send-readiness freshness. The runtime-hook store keeps a 5min freshness for activity
@@ -1722,7 +1722,7 @@ export interface BroadcastResult {
 }
 
 export interface TransportReadinessChecker {
-  checkReady?(binding: NodeBinding): Promise<ReadinessResult>;
+  checkReady?(binding: NodeBinding, options?: ReadinessOptions): Promise<ReadinessResult>;
 }
 
 interface SessionTransportDeps {
@@ -1767,6 +1767,10 @@ interface SessionReconciliationSnapshot {
   startup_completed_at: string | null;
   resume_type: string | null;
   resume_token: string | null;
+  resume_provenance: string | null;
+  resume_rotated_from: string | null;
+  resume_rotated_process: string | null;
+  resume_launch_process: string | null;
   binding_session: string | null;
   binding_window: string | null;
   binding_pane: string | null;
@@ -3704,7 +3708,7 @@ export class SessionTransport {
     return this.db.prepare(`
       SELECT n.id as node_id, r.id as rig_id, s.id as session_id, s.session_name, n.runtime, n.cwd,
              s.startup_status, s.status as session_status, s.startup_completed_at,
-             s.resume_type, s.resume_token,
+             s.resume_type, s.resume_token, s.resume_provenance, s.resume_rotated_from, s.resume_rotated_process, s.resume_launch_process,
              b.tmux_session as binding_session, b.tmux_window as binding_window, b.tmux_pane as binding_pane,
              b.updated_at as binding_updated_at,
              (SELECT generation_uuid FROM occupant_tenures WHERE node_id = n.id ORDER BY generation_ordinal DESC LIMIT 1) as occupant_generation,
@@ -3769,17 +3773,21 @@ export class SessionTransport {
       );
     };
 
+    // A Claude seat is checked with its real pane, occupant and recorded conversation (#1477); others keep the stand-in.
+    const claude = snapshot.runtime === "claude-code";
+    const rotation = claude ? claudeResumeRotation(snapshot) : null;
     const probeBinding: NodeBinding = {
       id: `session-transport:${snapshot.session_id}`,
       nodeId: snapshot.node_id,
       attachmentType: "tmux",
       tmuxSession: sessionName,
       tmuxWindow: null,
-      tmuxPane: null,
+      tmuxPane: claude ? snapshot.binding_pane : null,
       cmuxWorkspace: null,
       cmuxSurface: null,
       updatedAt: "",
       cwd: snapshot.cwd ?? "",
+      ...(claude && snapshot.occupant_generation ? { launchGeneration: snapshot.occupant_generation } : {}),
     };
 
     let timeoutTimer: NodeJS.Timeout | undefined;
@@ -3789,7 +3797,7 @@ export class SessionTransport {
 
     let readiness: ReadinessResult;
     try {
-      readiness = await Promise.race([checker.checkReady(probeBinding), timeoutPromise]);
+      readiness = await Promise.race([checker.checkReady(probeBinding, ...(claude && snapshot.resume_token ? [{ resumeToken: snapshot.resume_token, ...(rotation ? { resumeRotation: rotation } : {}) }] : [])), timeoutPromise]);
     } catch {
       return false;
     } finally {

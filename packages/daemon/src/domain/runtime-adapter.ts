@@ -1,5 +1,6 @@
 import type { Binding, StartupFile } from "./types.js";
 import type { ProjectionPlan } from "./projection-planner.js";
+import type { ClaudeResumeRotation } from "./native-process-lineage.js";
 
 // -- Bridge type: NodeBinding extends Binding with cwd --
 // Interim repo type. The current repo only has Binding in types.ts.
@@ -69,6 +70,8 @@ export interface ReadinessResult {
   ready: boolean;
   reason?: string;
   code?: string;
+  /** Ready because the pane's process proved the seat with no launch record (#1477): the screen alone would not have. */
+  provedWithoutLaunch?: boolean;
 }
 
 export const ATTENTION_REQUIRED_READINESS_CODES = new Set([
@@ -89,6 +92,10 @@ export const ATTENTION_REQUIRED_READINESS_CODES = new Set([
 export function isAttentionRequiredReadinessCode(code: string | undefined): boolean {
   return !!code && ATTENTION_REQUIRED_READINESS_CODES.has(code);
 }
+
+/** `resumeRotation`: the rotation recorded with `resumeToken` (#1077), as `rig seat clear-attention` passes it, so a
+ *  seat whose Claude continued its conversation under a new id is proved by the process that recorded the rotation. */
+export interface ReadinessOptions { resumeToken?: string | null; resumeRotation?: ClaudeResumeRotation | null }
 
 // -- Harness launch result --
 
@@ -212,6 +219,8 @@ export interface RuntimeAdapter {
     binding: NodeBinding, parentToken: string,
   ): Promise<{ resumeToken: string; resumeType: string } | null>;
 
-  /** Check if the runtime harness is responsive and ready. */
-  checkReady(binding: NodeBinding): Promise<ReadinessResult>;
+  /** Check if the runtime harness is responsive and ready. `options.resumeToken` is the seat's recorded conversation,
+   *  passed by a caller that holds the real binding (its pane) and has no launch to ask: the Claude adapter then
+   *  proves a banner-less auto-mode screen by that exact conversation (#1477). */
+  checkReady(binding: NodeBinding, options?: ReadinessOptions): Promise<ReadinessResult>;
 }
