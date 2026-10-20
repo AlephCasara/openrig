@@ -1,3 +1,4 @@
+import { physicalSessionName } from "../domain/session-registry.js";
 import { Hono } from "hono";
 import { shellQuote } from "../adapters/shell-quote.js";
 import type Database from "better-sqlite3";
@@ -41,7 +42,7 @@ export function compactionRoutes(opts?: { bearerToken?: string | null }): Hono {
       return c.json({ ok: false, error: "Missing required field: session" }, 400);
     }
     if (body.skipMap !== undefined && typeof body.skipMap !== "boolean") return c.json({ ok: false, error: "skipMap must be boolean" }, 400);
-    const sessionName = body.session;
+    const sessionName = physicalSessionName(db, body.session);
 
     // Ambiguity / existence check — mirror /send (409 ambiguous, 404 not found).
     const resolved = await transport.resolveSessions({ session: sessionName });
