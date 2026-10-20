@@ -160,7 +160,7 @@ async function run(): Promise<void> {
     if (!live || !client || startup?.state.connection !== "up") return false;
     if (!liveEnabled) checkDaemonBuild();
     liveEnabled = true;
-    if (!buildMismatch) activityEvents ??= subscribeActivityEvents({ open: () => client.openActivityEvents(), onEvent: (event) => { if (event.type.startsWith("proof.")) reviewCache.clear(); void live.invalidate(); }, onStatus: (status) => {
+    if (!buildMismatch) activityEvents ??= subscribeActivityEvents({ open: () => client.openActivityEvents(), onEvent: (event) => { if (event.type.startsWith("proof.")) reviewCache.clear(); live.pushed(); }, onStatus: (status) => {
       if (status === "dropped") eventsDropped = true;
       else if (status === "connected" && eventsDropped) { eventsDropped = false; checkDaemonBuild(); }
       live.connectionStatus(status);
