@@ -1040,6 +1040,37 @@ same-seat stop/resume path after checking its retained policy; do not erase the
 rig or start a duplicate to reset permissions. A resume can reapply the stored
 launch mode, so verify the native mode again before continuing work.
 
+## Optional Mac local-user check
+
+On a Mac shared by multiple OS accounts, `transport.local_user_guard` can reduce
+accidental CLI routing to another account's local daemon. It is **off by default**.
+Enable it with `rig config set transport.local_user_guard true`, or set
+`OPENRIG_TRANSPORT_LOCAL_USER_GUARD=true` in the CLI's environment. Set it to
+`false` to turn it off; no daemon restart is needed for the CLI check.
+
+When enabled, automatic local CLI data requests compare the daemon's reported
+`/healthz` PID and effective UID (`euid`) with two `ps` UID/start observations and
+a second health response, with at most one second of observation per check.
+Only stable agreement on a foreign effective UID stops the request. This does
+not require visibility into another user's socket descriptors. It does not
+stop the daemon, choose another port or retry. Diagnostic health/status checks
+remain available. Older daemons without `euid` remain unknown and are permitted.
+`sudo rig …` uses the caller's **effective** UID, so an enabled check against a
+user-owned daemon refuses when its reported/observed UID differs from root.
+
+Explicit `OPENRIG_URL`/`RIGGED_URL` targets and registered remote hosts retain
+their selected routing, including tunnels. An internally resolved local URL is
+still checked. Default UI and TUI openings are checked before launch; this does
+not police later browser or TUI connections.
+
+Missing, disagreeing, restricted or timed-out evidence **continues today's
+behavior**. This is a partial accidental-routing check, not authenticated user
+isolation: it trusts the daemon's PID/UID report and corroborates that process;
+it does not establish the socket's owner. Identity can change between observation
+and connection, and equal UIDs do not distinguish separate instances belonging
+to one account. The check
+does not add authentication to the daemon or protect direct HTTP clients.
+
 ## Custom settings and precedence
 
 - **OpenRig:** member `permission_policy` overrides rig `permission_policy`.

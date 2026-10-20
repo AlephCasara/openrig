@@ -187,9 +187,10 @@ export interface RiggedConfig {
     piOpenRouterCharge: boolean;
   };
   // A verified Claude Code or Codex send reports on input-box evidence (default off). Read by the daemon at
-  // each such send; the CLI key is the lockstep twin.
+  // each such send; the CLI key is the lockstep twin. localUserGuard is the optional CLI-side Mac check.
   transport: {
     verifyInputBox: boolean;
+    localUserGuard: boolean;
   };
   // OPR.0.4.6.FS-1 W2 — queue-retention maintenance knobs (twin of the daemon
   // settings-store): enabled + the four bounded numeric tunables.
@@ -360,6 +361,7 @@ const DEFAULTS = {
   // Input-box evidence for verified sends OFF until the switch is on.
   transport: {
     verifyInputBox: false,
+    localUserGuard: false,
   },
   // OPR.0.4.6.FS-1 W2 — retention defaults (twin of daemon getDefaultValue).
   retention: {
@@ -486,6 +488,7 @@ export const VALID_KEYS = [
   "usage.pi_cost_facts",
   "usage.pi_openrouter_charge",
   "transport.verify_input_box",
+  "transport.local_user_guard",
   // OPR.0.4.6.FS-1 W2 — queue-retention maintenance knobs; CLI-settable twin,
   // lockstep with the daemon settings-store SETTINGS_VALID_KEYS.
   "retention.enabled",
@@ -589,6 +592,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "provider.subscription_moves": { primary: "OPENRIG_PROVIDER_SUBSCRIPTION_MOVES" },
   "usage.pi_cost_facts": { primary: "OPENRIG_USAGE_PI_COST_FACTS" },
   "usage.pi_openrouter_charge": { primary: "OPENRIG_USAGE_PI_OPENROUTER_CHARGE" },
+  "transport.local_user_guard": { primary: "OPENRIG_TRANSPORT_LOCAL_USER_GUARD" },
   "transport.verify_input_box": { primary: "OPENRIG_TRANSPORT_VERIFY_INPUT_BOX" },
   // OPR.0.4.6.FS-1 W2 — retention knobs; net-new keys, OPENRIG_* primary only.
   "retention.enabled": { primary: "OPENRIG_RETENTION_ENABLED" },
@@ -676,6 +680,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "provider.subscription_moves": ["provider", "subscriptionMoves"],
   "usage.pi_cost_facts": ["usage", "piCostFacts"],
   "usage.pi_openrouter_charge": ["usage", "piOpenRouterCharge"],
+  "transport.local_user_guard": ["transport", "localUserGuard"],
   "transport.verify_input_box": ["transport", "verifyInputBox"],
   "retention.enabled": ["retention", "enabled"],
   "retention.transitions_days": ["retention", "transitionsDays"],
@@ -1226,6 +1231,7 @@ export class ConfigStore {
         piOpenRouterCharge: v("usage.pi_openrouter_charge") as boolean,
       },
       transport: {
+        localUserGuard: v("transport.local_user_guard") as boolean,
         verifyInputBox: v("transport.verify_input_box") as boolean,
       },
       retention: {
