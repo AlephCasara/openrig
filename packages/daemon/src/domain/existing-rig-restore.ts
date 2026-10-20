@@ -50,7 +50,7 @@ export function chooseRestoreSnapshot(deps: ExistingRigRestoreDeps, rigId: strin
         ok: false,
         status: 404,
         body: {
-          error: `Rig exists but ${staleSnapshot ? "its restore snapshots name an older occupant" : "has no restore-usable snapshot"} and current DB state is insufficient for rehydrate. Start fresh with: rig up <spec-path>`,
+          error: `Rig exists but ${staleSnapshot ? "its selected restore snapshot does not match current occupant state" : "has no restore-usable snapshot"} and current DB state is insufficient for rehydrate. Start fresh with: rig up <spec-path>`,
           code: "no_snapshot",
           blockers: eligibility.blockers,
         },

@@ -174,7 +174,7 @@ async function renderExistingRestore(
     nodes: result.result.nodes,
     warnings: [...joinedWarning, ...(capturedCurrentState
       ? [staleSnapshot
-          ? "Existing restore snapshots named an older occupant; captured current DB state as auto-rehydrate snapshot for reboot recovery."
+          ? "The selected restore snapshot did not match current occupant state; captured current DB state as auto-rehydrate snapshot for reboot recovery."
           : "No restore-usable snapshot existed; captured current DB state as auto-rehydrate snapshot for reboot recovery.", ...result.result.warnings]
       : result.result.warnings)],
     attachCommand,

@@ -1,6 +1,7 @@
 import { observeSolePane } from "./pane-binding-observation.js";
 import { automaticRestoreOverrides, type AutomaticSeatReplacement } from "./existing-rig-restore.js";
 import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
+import { assessSnapshotCurrentOccupants, stoppedFreshSnapshotReason } from "./rehydrate-eligibility.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -419,6 +420,7 @@ export class RestoreOrchestrator {
 
       // 4. Compute restore plan
       const plan = this.computeRestorePlan(snapshot.data).filter(entry => !replacements.length || selectedIds.has(entry.node.id));
+      const { stoppedFreshNodeIds } = assessSnapshotCurrentOccupants(this.db, rig, snapshot);
 
       // 5. Execute restore with compensating pattern per node
       const nodeResults: RestoreNodeResult[] = [];
@@ -427,7 +429,7 @@ export class RestoreOrchestrator {
       else if (opts?.nonInterruptive === false) restoreWarnings.push(nonInterruptiveSummary(false));
       for (const entry of plan) {
         const replacement = replacements.find(target => target.nodeId === entry.node.id);
-        const result = await this.restoreNodeWithCompensation(entry, rigId, snapshotId, snapshot.data, opts, restoreWarnings);
+        const result = await this.restoreNodeWithCompensation(entry, rigId, snapshotId, snapshot.data, opts, restoreWarnings, stoppedFreshNodeIds.has(entry.node.id));
         nodeResults.push(result);
         if (replacement && (this.db.prepare("SELECT status FROM sessions WHERE id = ?").get(replacement.sessionId) as { status: string } | undefined)?.status === "exited") {
           restoreWarnings.push(`Stopped ${entry.node.logicalId}'s startup occupant for explicit replacement; replacement outcome: ${result.status}.`);
@@ -920,6 +922,7 @@ export class RestoreOrchestrator {
     data: SnapshotData,
     opts?: { adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>; fsOps?: { exists(path: string): boolean }; freshLogicalIds?: string[]; onSessionLaunched?: (nodeId: string, sessionId: string) => void; automaticReplacements?: AutomaticSeatReplacement[] },
     warnings?: string[],
+    preserveStoppedFresh = false,
   ): Promise<RestoreNodeResult> {
     // Compare against the live logical target without changing saved post-launch inputs.
     const node = entry.node;
@@ -943,6 +946,9 @@ export class RestoreOrchestrator {
     }
 
     const freshRequested = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
+    if (occupantResolution.kind === "none" && preserveStoppedFresh && !freshRequested) {
+      return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: stoppedFreshSnapshotReason(node.logicalId) };
+    }
     const runtimeError = restoreRuntimeCompatibilityError(liveNode ? liveNode.runtime : node.runtime,
       data.nodeStartupContext?.[nodeId]?.runtime);
     if (runtimeError) {
