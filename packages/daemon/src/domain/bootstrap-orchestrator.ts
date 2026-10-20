@@ -61,6 +61,8 @@ export interface BootstrapStageResult {
 
 /** Full bootstrap result */
 export interface BootstrapResult {
+  /** A started launch failed to remove one-off env from tmux session state. */
+  code?: string;
   runId: string;
   status: BootstrapStatus;
   stages: BootstrapStageResult[];
@@ -635,10 +637,15 @@ export class BootstrapOrchestrator {
     }
 
     const nonInterruptive = opts.nonInterruptive ?? (new SettingsStore().resolveOne("launch.non_interruptive").value === true);
-    const instantiateOutcome = await this.deps.rigInstantiator.instantiate(spec, { nonInterruptive });
+    const instantiateOutcome = await this.deps.rigInstantiator.instantiate(spec, { nonInterruptive, ...(opts.envOverride ? { env: opts.envOverride } : {}) });
     if ((instantiateOutcome.ok || "rigId" in instantiateOutcome) && (nonInterruptive || opts.nonInterruptive === false)) warnings.push(nonInterruptiveSummary(nonInterruptive));
 
-    this.deps.bootstrapRepo.journalAction(run.id, seqCounter++, "rig_import", null, spec.name, instantiateOutcome.ok ? "completed" : "failed", {
+    const envCleanupErrors = instantiateOutcome.ok ? instantiateOutcome.result.envCleanupErrors
+      : instantiateOutcome.code === "instantiate_error" ? instantiateOutcome.envCleanupErrors : undefined;
+    const cleanupFailed = Boolean(envCleanupErrors?.length);
+    if (envCleanupErrors) errors.push(...envCleanupErrors);
+
+    this.deps.bootstrapRepo.journalAction(run.id, seqCounter++, "rig_import", null, spec.name, instantiateOutcome.ok && !cleanupFailed ? "completed" : "failed", {
       detailJson: JSON.stringify(instantiateOutcome),
     });
 
@@ -647,16 +654,16 @@ export class BootstrapOrchestrator {
       stages.push({ stage: "import_rig", status: "failed", detail: instantiateOutcome });
       const finalStatus: BootstrapStatus = hasExecFailures || packageInstallFailed ? "partial" : "failed";
       this.deps.bootstrapRepo.updateRunStatus(run.id, finalStatus);
-      return { runId: run.id, status: finalStatus, stages, errors, warnings };
+      return { runId: run.id, status: finalStatus, stages, errors, warnings, ...(cleanupFailed ? { code: "seat_env_cleanup_failed" as const } : {}) };
     }
 
-    stages.push({ stage: "import_rig", status: "ok", detail: instantiateOutcome.result });
+    stages.push({ stage: "import_rig", status: cleanupFailed ? "failed" : "ok", detail: instantiateOutcome.result });
     if (instantiateOutcome.result.warnings?.length) {
       warnings.push(...instantiateOutcome.result.warnings);
     }
 
     // --- DONE ---
-    const finalStatus: BootstrapStatus = hasExecFailures || packageInstallFailed ? "partial" : "completed";
+    const finalStatus: BootstrapStatus = hasExecFailures || packageInstallFailed || cleanupFailed ? "partial" : "completed";
     this.deps.bootstrapRepo.updateRunStatus(run.id, finalStatus, { rigId: instantiateOutcome.result.rigId });
 
     return {
@@ -664,6 +671,7 @@ export class BootstrapOrchestrator {
       status: finalStatus,
       stages,
       rigId: instantiateOutcome.result.rigId,
+      ...(cleanupFailed ? { code: "seat_env_cleanup_failed" as const } : {}),
       errors,
       warnings,
     };
