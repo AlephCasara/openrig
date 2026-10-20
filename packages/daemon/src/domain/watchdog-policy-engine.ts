@@ -65,6 +65,8 @@ export interface DeliveryOutcome {
 
 export interface WatchdogDeliverySource {
   occurrenceId?: string;
+  /** Pre-cadence identity: an unfinished old-format receipt may still own this attempt. */
+  legacyOccurrenceId?: string;
   jobId: string;
   policy: string;
   /** A digest's members, when one send carries several reminders: each job and the occurrence it was due for. */
@@ -545,7 +547,16 @@ export class WatchdogPolicyEngine {
       occupantGeneration,
     );
 
-    const occurrenceId = createHash("sha256").update(JSON.stringify([job.jobId, occupantGeneration, outcome.conditionReceipt ?? (job.policy === "periodic-reminder" ? job.lastFireAt : outcome.message)])).digest("hex");
+    const occurrence = [job.jobId, occupantGeneration, outcome.conditionReceipt ?? (job.policy === "periodic-reminder" ? job.lastFireAt : outcome.message)];
+    const recurring = outcome.conditionReceipt === undefined && job.policy !== "periodic-reminder" && job.policy !== "context-usage-threshold";
+    const legacyOccurrenceId = recurring ? createHash("sha256").update(JSON.stringify(occurrence)).digest("hex") : undefined;
+    // A recurring policy may send identical text on later cadences. Once an
+    // attempt is accounted, its next fire needs a new delivery identity. Keep
+    // first-fire IDs and generation-bound threshold IDs stable for recovery.
+    if (recurring && job.lastFireAt !== null) {
+      occurrence.push(job.lastFireAt);
+    }
+    const occurrenceId = createHash("sha256").update(JSON.stringify(occurrence)).digest("hex");
     // A parked-row reminder due in a scheduler pass waits for the pass's end, when every reminder held for its seat
     // goes in one message. Nothing has changed for it yet, so a pass that stops early leaves it due.
     const digestEntry = job.policy === "periodic-reminder" && !continuityAction
@@ -571,7 +582,7 @@ export class WatchdogPolicyEngine {
         message,
         ...(continuityAction ? { continuityAction } : {}),
       },
-      { jobId: job.jobId, policy: job.policy, occurrenceId },
+      { jobId: job.jobId, policy: job.policy, occurrenceId, ...(legacyOccurrenceId ? { legacyOccurrenceId } : {}) },
     );
     if (
       isContextUsageThreshold &&
