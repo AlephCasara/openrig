@@ -81,10 +81,11 @@ export function findLatestUsableSnapshot(db: Database.Database, rigId: string): 
  * arch-D1.1 sibling-audit `snapshots(rig_id, created_at)` index candidate.
  */
 export function findLatestUsableSnapshotsForAllRigs(db: Database.Database): Map<string, Snapshot> {
+  // One latest-snapshot lookup per rig with snapshots (from the index), not one per snapshot row.
   const rows = db.prepare(`
-    SELECT s.* FROM snapshots s
-    WHERE s.id = (
-      SELECT s2.id FROM snapshots s2 WHERE s2.rig_id = s.rig_id
+    SELECT s.* FROM (SELECT DISTINCT rig_id FROM snapshots) r
+    JOIN snapshots s ON s.id = (
+      SELECT s2.id FROM snapshots s2 WHERE s2.rig_id = r.rig_id
       ORDER BY s2.created_at DESC, s2.id DESC LIMIT 1
     )
   `).all() as SnapshotRow[];

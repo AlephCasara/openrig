@@ -441,9 +441,11 @@ function deriveHeldReason(db: Database.Database, rigId: string, nodeId: string, 
 
   // Superseded by a later rig-scoped restore event containing this node.
   // restore.completed/restore.subset_completed are rig-scoped (no top-level nodeId),
-  // so query by rig_id and parse payloads for node containment.
+  // so query by rig_id and parse payloads for node containment. The first type list
+  // is idx_events_restore_rig_seq's own condition, which lets the read use that index
+  // instead of every later event of the rig; the second keeps the two types read.
   const laterRestoreRows = db.prepare(
-    "SELECT payload FROM events WHERE rig_id = ? AND type IN ('restore.completed', 'restore.subset_completed') AND seq > ? ORDER BY seq DESC"
+    "SELECT payload FROM events WHERE rig_id = ? AND type IN ('restore.completed', 'restore.subset_completed', 'restore.outcome_reconciled') AND type IN ('restore.completed', 'restore.subset_completed') AND seq > ? ORDER BY seq DESC"
   ).all(rigId, heldRow.seq) as { payload: string }[];
   for (const row of laterRestoreRows) {
     try {
