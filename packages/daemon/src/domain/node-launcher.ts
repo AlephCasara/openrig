@@ -35,6 +35,8 @@ interface LaunchOpts {
   silenceWindowSeconds?: number;
   /** A deliberate fresh occupant is distinct from initial rig boot in the tenure ledger. */
   occupantKind?: OccupantKind;
+  /** Told the new session's id as soon as its row is committed, before the launch goes on. */
+  onSessionRegistered?: (sessionId: string) => void;
   /** One-off env for this launch only (`rig up --env`); wins over the spec's env and is not saved. */
   env?: SeatEnv;
   /** The seat's resolved plugin locations (what the profile resolver selected for it, or a snapshot saved). A Claude
@@ -284,6 +286,7 @@ export class NodeLauncher {
       };
     }
 
+    if (createdSessionId) opts?.onSessionRegistered?.(createdSessionId);
     this.tmuxAdapter.deliveryGuard?.rebindLifecycle(node.id);
     this.tmuxAdapter.finishLaunchBinding?.(sessionName);
 
