@@ -613,7 +613,10 @@ export interface SeatIdentityVerdict {
     | null;
   evidence: {
     registeredPane: string | null;
+    /** PID of the matched process (a native child for wrapper launches). */
     observedPid: number | null;
+    /** Pane root observed in the same verdict; absent on legacy verdicts. */
+    observedPanePid?: number | null;
     observedCommand: string | null;
     matchedLayer: number | null;
   };

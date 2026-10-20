@@ -344,7 +344,7 @@ export class SeatIdentityReconciler {
       return {
         ...base, verdict: verified ? "verified" : "mismatch",
         evidenceSource: "pane_process", reason: verified ? null : "process_identity_ambiguous",
-        evidence: { registeredPane: seat.tmux_pane, observedPid: native?.process.pid ?? pid,
+        evidence: { registeredPane: seat.tmux_pane, observedPanePid: pid, observedPid: native?.process.pid ?? pid,
           observedCommand: native?.process.command ?? command, matchedLayer: verified ? 1 : null },
       };
     }

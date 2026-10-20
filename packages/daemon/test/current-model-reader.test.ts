@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
+import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { ProcessCensus } from "../src/domain/process-census.js";
 import { CurrentModelReader } from "../src/domain/model-divergence/current-model-reader.js";
@@ -46,7 +47,7 @@ function fixture(runtime = "claude-code") {
     readAllPaneProcesses, census, now: () => boot + 60_000, native: { getPanePid, listProcesses: () => census.list(), readThreadIdByPid: thread },
   });
   const input = { nodeId: node.id, canonicalSessionName: "editor@studio", runtime, sessionStatus: "running" };
-  return { db, dir, rigs, rig, node, sessions, identities, session, tenure, boot, stamp, path, claudeRecord, reader, input, list, getPanePid, thread, processRows, readAllPaneProcesses };
+  return { db, dir, rigs, rig, node, sessions, identities, session, tenure, boot, stamp, path, id, claudeRecord, reader, input, list, getPanePid, thread, processRows, readAllPaneProcesses };
 }
 
 it("reports assistant-response evidence separately from the pin, with native time and no record contents", async () => {
@@ -274,3 +275,59 @@ it.each([false, true])("r3: retains observed PID-turnover reporting with a warme
   expect(await f.reader.observe(f.input)).toMatchObject({ status: "unknown", model: null, reason: "occupant-changed-during-read" });
   expect(f.getPanePid).toHaveBeenCalledTimes(3);
 });
+
+
+// Compose the real reconciler/store/record reader: a hand-seeded pane-PID verdict hides this bug.
+async function wrapperFixture() {
+  const f = fixture();
+  f.db.prepare("UPDATE sessions SET resume_token = ? WHERE id = ?").run(f.id, f.session.id);
+  const rows = [
+    { pid: 10, ppid: 1, pgid: 10, tpgid: 20, executableName: "sh", command: "sh", startedAt: f.stamp },
+    { pid: 20, ppid: 10, pgid: 20, tpgid: 20, executableName: "claude", command: `claude --resume ${f.id}`, startedAt: f.stamp },
+  ];
+  f.list.mockImplementation(async () => rows);
+  const reconciler = new SeatIdentityReconciler({ db: f.db, now: () => new Date(f.stamp), listProcesses: f.list,
+    tmux: { listSessions: async () => [{ name: "editor@studio" }], getPanePid: f.getPanePid,
+      getPaneCommand: async () => "sh" } as never });
+  await reconciler.reconcileAll();
+  expect(f.identities.getForNode(f.node.id)).toMatchObject({ verdict: "verified", evidence: { observedPid: 20 } });
+  const seat = { nodeId: f.node.id, sessionName: "editor@studio", runtime: "claude-code", generation: f.tenure.generationUuid,
+    rigId: f.rig.id, rigName: "studio", pinnedModel: "configured-model" };
+  return { ...f, rows, reconciler, seat };
+}
+
+it("reads the response model through a persisted wrapper-root/Claude-child verdict", async () => {
+  const f = await wrapperFixture();
+  expect(await f.reader.readEffectiveModel(f.seat)).toEqual({ ok: true, model: "response-model" });
+  expect(await f.reader.observe(f.input)).toMatchObject({ status: "observed", model: "response-model" });
+});
+
+it("the wrapper join ignores a newer retained predecessor record and process outside its pane", async () => {
+  const f = await wrapperFixture();
+  const priorId = "22222222-2222-4222-8222-222222222222", priorPath = join(f.dir, `${priorId}.jsonl`);
+  writeFileSync(priorPath, f.claudeRecord(new Date(f.boot + 3_000).toISOString(), "predecessor-model"));
+  f.rows.push({ pid: 30, ppid: 1, pgid: 30, tpgid: 40, executableName: "sh", command: "sh", startedAt: f.stamp },
+    { pid: 40, ppid: 30, pgid: 40, tpgid: 40, executableName: "claude", command: `claude --resume ${priorId}`, startedAt: f.stamp });
+  const { resolveIdentityVerifiedClaudeRecord } = await import("../src/domain/model-divergence/current-generation-record.js");
+  expect(await resolveIdentityVerifiedClaudeRecord({ sessionName: f.seat.sessionName, generation: f.seat.generation,
+    occupantBootAt: f.tenure.bootAt, binding: { tmuxSession: f.seat.sessionName, tmuxPane: "%1" },
+    identity: f.identities.getForNode(f.node.id), sidecar: { session_name: f.seat.sessionName, session_id: priorId,
+      transcript_path: priorPath, sampled_at: f.stamp, occupant_generation: "retained-generation" } },
+  { getPanePid: f.getPanePid, listProcesses: f.list }, () => true)).toMatchObject({ ok: true, id: f.id, path: f.path,
+    source: "verified-pane-argument" });
+});
+
+it.each(["child-replaced", "child-moved", "pane-replaced", "binding-changed", "old-verdict"])(
+  "does not read a wrapper record after %s", async kind => {
+    const f = await wrapperFixture();
+    if (kind === "child-replaced") f.rows[1]!.pid = 21;
+    if (kind === "child-moved") f.rows[1]!.ppid = 99;
+    if (kind === "pane-replaced") {
+      f.getPanePid.mockResolvedValue(99);
+      f.rows[0]!.pid = 99; f.rows[1]!.ppid = 99;
+    }
+    if (kind === "binding-changed") f.sessions.updateBinding(f.node.id, { tmuxSession: "editor@studio", tmuxPane: "%2" });
+    if (kind === "old-verdict") f.identities.upsert({ ...f.identities.getForNode(f.node.id)!, observedAt: new Date(f.boot - 1_000).toISOString() });
+    expect((await f.reader.readEffectiveModel(f.seat)).ok).toBe(false);
+  },
+);

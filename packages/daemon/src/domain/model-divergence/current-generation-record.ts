@@ -42,7 +42,7 @@ export interface ClaudeOccupantRecordInput {
     verdict: string;
     sessionName: string | null;
     observedAt: string;
-    evidence: { registeredPane: string | null; observedPid: number | null };
+    evidence: { registeredPane: string | null; observedPid: number | null; observedPanePid?: number | null };
   } | null;
   sidecar: {
     session_id?: string;
@@ -111,7 +111,7 @@ export async function paneClaudeSessionIdArgument(
 
 /**
  * Resolve a Claude record only after the canonical seat's current occupant is joined to its
- * registered pane and the pane's PID still matches the durable identity verdict. The pane's launch
+ * registered pane and the pane's root and matched process still match the durable identity verdict. The pane's launch
  * argument is the legacy identity anchor. A generation-stamped sidecar may supersede it after a
  * provider-internal session rollover; an unstamped sidecar may locate files but cannot override it.
  */
@@ -151,10 +151,12 @@ export async function resolveIdentityVerifiedClaudeRecord(
   }
   const panePid = await deps.getPanePid(binding.tmuxPane);
   if (!panePid) return { ok: false, reason: `registered pane ${binding.tmuxPane} has no live pid` };
-  if (panePid !== identity.evidence.observedPid) {
+  // Legacy verdicts only recorded one PID; retain their old pane-root check until refreshed.
+  const verifiedPanePid = identity.evidence.observedPanePid ?? identity.evidence.observedPid;
+  if (panePid !== verifiedPanePid) {
     return {
       ok: false,
-      reason: `registered pane pid changed since identity verification (${identity.evidence.observedPid} -> ${panePid})`,
+      reason: `registered pane pid changed since identity verification (${verifiedPanePid} -> ${panePid})`,
     };
   }
 
@@ -162,6 +164,9 @@ export async function resolveIdentityVerifiedClaudeRecord(
   const claudePids = findDescendants(processes, panePid, commandBasenameIs("claude"));
   if (claudePids.length === 0) {
     return { ok: false, reason: `no claude process under verified pane ${binding.tmuxPane}` };
+  }
+  if (identity.evidence.observedPid !== panePid && !claudePids.includes(identity.evidence.observedPid)) {
+    return { ok: false, reason: `verified claude process ${identity.evidence.observedPid} is no longer under pane ${binding.tmuxPane}` };
   }
   const paneIds = new Set<string>();
   for (const pid of claudePids) {

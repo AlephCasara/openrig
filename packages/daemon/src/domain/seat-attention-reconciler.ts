@@ -260,6 +260,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
     evidence: {
       registeredPane: pane.id,
       observedPid: lineageMatch?.pid ?? pid,
+      observedPanePid: pid,
       observedCommand: lineageMatch?.command ?? command,
       matchedLayer: pid === null || runtimeAmbiguous || unconfirmed ? null : 1,
     },
