@@ -22,7 +22,9 @@ async function createTestDaemon(
   };
   try {
     const daemon = await createDaemon(options);
-    expect(fetchedUrls).toEqual([pluginVendorUrl]);
+    // Startup now uses the local vendored plugin without a redundant release
+    // request. Any other fetch is still rejected by this fixture.
+    expect(fetchedUrls).toEqual([]);
     return daemon;
   } finally {
     globalThis.fetch = originalFetch;

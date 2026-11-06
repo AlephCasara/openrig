@@ -337,6 +337,20 @@ export class PluginVendorService {
     await this.ensureVendored(pluginName);
     await this.attemptAutoFetch(pluginName);
   }
+
+  /**
+   * Seed locally at boot without an otherwise unused release probe.
+   * The current fetch success path does not install remote bytes (v0), so
+   * probing on every daemon restart only adds network dependency and delay.
+   * Explicit opt-in preserves the diagnostic behavior of ensureLatest().
+   */
+  async ensureAtStartup(pluginName: string, options: { probeRemote?: boolean } = {}): Promise<void> {
+    if (options.probeRemote === true) {
+      await this.ensureLatest(pluginName);
+    } else {
+      await this.ensureVendored(pluginName);
+    }
+  }
 }
 
 function hashContent(content: string): string {
