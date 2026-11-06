@@ -1,5 +1,9 @@
 # Host load and transcript capture
 
+For memory-constrained deployments, see the
+[lean VPS profile and reproducible benchmarks](vps-lean-profile.md). It
+includes the whole agent process budget and the optional Slack/UI posture.
+
 Use `rig ps --resources` to inspect the serving host, or add `--host <id>`
 for one registered HTTP/SSH host. `--json` returns the same measurements for
 operators and monitoring tools. This view is host-scoped; rig/node filters and

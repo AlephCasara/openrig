@@ -4,6 +4,9 @@ import type { RigEvent, PersistedEvent } from "./types.js";
 
 type Subscriber = (event: PersistedEvent) => void;
 
+/** Bound transient notification rows; durable events stay in SQLite until delivered. */
+export const NOTIFY_DRAIN_PAGE_SIZE = 256;
+
 declare const notifyTokenBrand: unique symbol;
 export type NotifyToken = PersistedEvent & { readonly [notifyTokenBrand]: true };
 export type NotifyRegister = (token: PersistedEvent) => void;
@@ -240,7 +243,10 @@ export class EventBus {
     let cursor = startAfter;
     try {
       for (;;) {
-        const rows = this.rowsAfter(cursor);
+        // The log can contain a very large committed transaction. Loading its
+        // entire tail into JS memory is unnecessary: consumers see each row
+        // synchronously and in seq order, including rows they append in callbacks.
+        const rows = this.rowsAfter(cursor, NOTIFY_DRAIN_PAGE_SIZE);
         if (rows.length === 0) return;
         for (const row of rows) {
           let event: PersistedEvent;
@@ -282,7 +288,15 @@ export class EventBus {
     return row.seq ?? 0;
   }
 
-  private rowsAfter(seq: number): EventRow[] {
+  private notifyPageStatement?: Database.Statement;
+
+  private rowsAfter(seq: number, limit?: number): EventRow[] {
+    if (limit !== undefined) {
+      this.notifyPageStatement ??= this.db.prepare(
+        "SELECT seq, rig_id, node_id, type, payload, created_at FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
+      );
+      return this.notifyPageStatement.all(seq, limit) as EventRow[];
+    }
     return this.db
       .prepare(
         "SELECT seq, rig_id, node_id, type, payload, created_at FROM events WHERE seq > ? ORDER BY seq",
