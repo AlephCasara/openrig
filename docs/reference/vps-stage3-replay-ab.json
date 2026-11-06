@@ -1,0 +1,140 @@
+{
+  "purpose": "Single bounded-byte replayPage call A/B, same 500 large SQLite event rows. Legacy base ignores fifth argument.",
+  "collectedAt": "2026-11-06T15:39:42.667Z",
+  "node": "v24.20.0",
+  "repeats": 3,
+  "worktrees": {
+    "baseline": {
+      "directory": "openrig-baseline-vps",
+      "revision": "f68d28e417239fd0173f1954241f266e84bf1c3c"
+    },
+    "modified": {
+      "directory": "GoS_open-rig",
+      "revision": "withdrawn-pre-sanitization-revision"
+    }
+  },
+  "samples": [
+    {
+      "variant": "baseline",
+      "rep": 0,
+      "exitCode": 0,
+      "signal": null,
+      "events": 500,
+      "actualPayloadBytes": 98355,
+      "pageBudgetBytes": 4194304,
+      "rowsReturned": 500,
+      "firstSeq": 1,
+      "lastSeq": 500,
+      "elapsedMs": 90.75,
+      "heapBeforeMb": 5.5,
+      "heapAfterMb": 112.4,
+      "heapDeltaMb": 106.9,
+      "peakProcessRssMb": 231.5,
+      "finalProcessRssMb": 231.5
+    },
+    {
+      "variant": "modified",
+      "rep": 0,
+      "exitCode": 0,
+      "signal": null,
+      "events": 500,
+      "actualPayloadBytes": 98355,
+      "pageBudgetBytes": 4194304,
+      "rowsReturned": 21,
+      "firstSeq": 1,
+      "lastSeq": 21,
+      "elapsedMs": 3.49,
+      "heapBeforeMb": 5.5,
+      "heapAfterMb": 9.1,
+      "heapDeltaMb": 3.5,
+      "peakProcessRssMb": 114,
+      "finalProcessRssMb": 114
+    },
+    {
+      "variant": "modified",
+      "rep": 1,
+      "exitCode": 0,
+      "signal": null,
+      "events": 500,
+      "actualPayloadBytes": 98355,
+      "pageBudgetBytes": 4194304,
+      "rowsReturned": 21,
+      "firstSeq": 1,
+      "lastSeq": 21,
+      "elapsedMs": 3.98,
+      "heapBeforeMb": 5.6,
+      "heapAfterMb": 8,
+      "heapDeltaMb": 2.4,
+      "peakProcessRssMb": 113.5,
+      "finalProcessRssMb": 113.5
+    },
+    {
+      "variant": "baseline",
+      "rep": 1,
+      "exitCode": 0,
+      "signal": null,
+      "events": 500,
+      "actualPayloadBytes": 98355,
+      "pageBudgetBytes": 4194304,
+      "rowsReturned": 500,
+      "firstSeq": 1,
+      "lastSeq": 500,
+      "elapsedMs": 84.5,
+      "heapBeforeMb": 5.6,
+      "heapAfterMb": 112.4,
+      "heapDeltaMb": 106.8,
+      "peakProcessRssMb": 231.3,
+      "finalProcessRssMb": 231.3
+    },
+    {
+      "variant": "baseline",
+      "rep": 2,
+      "exitCode": 0,
+      "signal": null,
+      "events": 500,
+      "actualPayloadBytes": 98355,
+      "pageBudgetBytes": 4194304,
+      "rowsReturned": 500,
+      "firstSeq": 1,
+      "lastSeq": 500,
+      "elapsedMs": 85.09,
+      "heapBeforeMb": 5.6,
+      "heapAfterMb": 112.5,
+      "heapDeltaMb": 106.9,
+      "peakProcessRssMb": 232.1,
+      "finalProcessRssMb": 231.8
+    },
+    {
+      "variant": "modified",
+      "rep": 2,
+      "exitCode": 0,
+      "signal": null,
+      "events": 500,
+      "actualPayloadBytes": 98355,
+      "pageBudgetBytes": 4194304,
+      "rowsReturned": 21,
+      "firstSeq": 1,
+      "lastSeq": 21,
+      "elapsedMs": 3.56,
+      "heapBeforeMb": 5.5,
+      "heapAfterMb": 9.1,
+      "heapDeltaMb": 3.5,
+      "peakProcessRssMb": 114.6,
+      "finalProcessRssMb": 114.4
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "peakProcessRssMb": 231.5,
+      "heapDeltaMb": 106.9,
+      "elapsedMs": 85.09,
+      "rowsReturned": 500
+    },
+    "modified": {
+      "peakProcessRssMb": 114,
+      "heapDeltaMb": 3.5,
+      "elapsedMs": 3.56,
+      "rowsReturned": 21
+    }
+  }
+}

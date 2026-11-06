@@ -55,6 +55,18 @@ Claude/MCP plugins should be enabled only for seats that use them: a separate
 memory server increases the actual VPS process budget even when OpenRig's
 plugin-discovery API is cheap.
 
+For this branch, bootstrapping the built-in `openrig-core` plugin uses the
+shipped local copy without contacting a release URL. A remote diagnostic
+probe is opt-in with `OPENRIG_PLUGIN_VENDOR_PROBE_ON_START=1`. The current v0
+remote probe **does not download and install an update even when it succeeds**;
+this setting only restores the existing GitHub request and its possible
+five-second network timeout. The CLI's explicit vendor checks are unchanged.
+The daemon also defers the transient `claude --help` permission-vocabulary
+probe until an actual permission-drift diagnostic requests it; the first
+diagnostic can honestly return UNKNOWN while the background read completes.
+This prevents a gratuitous runtime spawn at every headless daemon start
+without disabling permission checks on active seats.
+
 ## Memory changes in this branch
 
 * **EventBus notification drain:** a large committed transaction is consumed
@@ -146,6 +158,11 @@ three-repeat event-backlog measurements, full-suite environmental failures and
 unverified real-VPS gates, is recorded in
 [vps-stage2-validation.md](vps-stage2-validation.md). Prefer that controlled
 multi-run evidence to the illustrative one-off numbers above.
+
+The separate adversarial review, including replay/SSE byte budgets, stale
+cursor recovery, boot-time dependency cost, inherited security risks,
+optional integration boundaries and new A/B evidence, is documented in
+[vps-stage3-security-review.md](vps-stage3-security-review.md).
 
 ```sh
 npm run lint

@@ -1,0 +1,103 @@
+{
+  "measuredAt": "2026-11-06T15:33:03.390Z",
+  "heapMb": 256,
+  "repeats": 3,
+  "cases": [
+    [
+      12000,
+      8192
+    ]
+  ],
+  "samples": [
+    {
+      "variant": "baseline",
+      "repeat": 0,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 358,
+      "peakRssMb": 435.5,
+      "finalRssMb": 435.5,
+      "heapUsedMb": 160.4
+    },
+    {
+      "variant": "modified",
+      "repeat": 0,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 294,
+      "peakRssMb": 275.4,
+      "finalRssMb": 275.4,
+      "heapUsedMb": 34.8
+    },
+    {
+      "variant": "modified",
+      "repeat": 1,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 299,
+      "peakRssMb": 276.7,
+      "finalRssMb": 276.7,
+      "heapUsedMb": 39.5
+    },
+    {
+      "variant": "baseline",
+      "repeat": 1,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 353,
+      "peakRssMb": 433.3,
+      "finalRssMb": 433.3,
+      "heapUsedMb": 165.3
+    },
+    {
+      "variant": "baseline",
+      "repeat": 2,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 353,
+      "peakRssMb": 433.1,
+      "finalRssMb": 433.1,
+      "heapUsedMb": 166
+    },
+    {
+      "variant": "modified",
+      "repeat": 2,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 283,
+      "peakRssMb": 276.4,
+      "finalRssMb": 276.4,
+      "heapUsedMb": 34.8
+    }
+  ]
+}

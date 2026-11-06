@@ -20,6 +20,8 @@ const HEAP_MB = Number(process.env.BENCH_HEAP_MB ?? 256);
 const UI_ENABLED = process.env.BENCH_UI_ENABLED === "1";
 const TRANSCRIPTS_ENABLED = process.env.BENCH_TRANSCRIPTS_ENABLED !== "0";
 const KERNEL_ENABLED = process.env.BENCH_KERNEL_ENABLED !== "0";
+const FETCH_GUARD_ENABLED = process.env.BENCH_FETCH_GUARD !== "0";
+const PLUGIN_VENDOR_PROBE = process.env.BENCH_PLUGIN_VENDOR_PROBE === "1";
 const IDLE_MS = Number(process.env.BENCH_IDLE_MS ?? 3_000);
 const REQUESTS = Number(process.env.BENCH_REQUESTS ?? 80);
 const CONCURRENCY = Number(process.env.BENCH_CONCURRENCY ?? 8);
@@ -145,8 +147,13 @@ async function main() {
     OPENRIG_UI_ENABLED: String(UI_ENABLED),
     OPENRIG_TRANSCRIPTS_ENABLED: String(TRANSCRIPTS_ENABLED),
     ...(KERNEL_ENABLED ? {} : { OPENRIG_NO_KERNEL: "1" }),
+    ...(PLUGIN_VENDOR_PROBE ? { OPENRIG_PLUGIN_VENDOR_PROBE_ON_START: "1" } : {}),
   };
-  const child = spawn(process.execPath, [`--max-old-space-size=${HEAP_MB}`, DAEMON], {
+  const nodeArgs = [
+    ...(FETCH_GUARD_ENABLED ? ["--import", join(ROOT, "scripts/bench-fetch-guard.mjs")] : []),
+    `--max-old-space-size=${HEAP_MB}`, DAEMON,
+  ];
+  const child = spawn(process.execPath, nodeArgs, {
     cwd: SOURCE_ROOT, env, stdio: ["ignore", "pipe", "pipe"], detached: true,
   });
   let output = "";
@@ -228,6 +235,9 @@ async function main() {
       webUiEnabled: UI_ENABLED,
       transcriptsEnabled: TRANSCRIPTS_ENABLED,
       kernelAutoBootEnabled: KERNEL_ENABLED,
+      fetchGuardEnabled: FETCH_GUARD_ENABLED,
+      pluginVendorRemoteProbeOptIn: PLUGIN_VENDOR_PROBE,
+      pluginVendorFetchLogObserved: output.includes("[plugin-vendor] fetch openrig-core"),
       startupMs, idleRssMb: idleRss,
       // Sampled every 200ms. Short-lived tmux helpers may start/exit between
       // samples; these figures exclude independent agent tmux sessions.
