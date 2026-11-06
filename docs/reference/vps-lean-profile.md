@@ -164,6 +164,11 @@ cursor recovery, boot-time dependency cost, inherited security risks,
 optional integration boundaries and new A/B evidence, is documented in
 [vps-stage3-security-review.md](vps-stage3-security-review.md).
 
+The final local acceptance matrix, source-package assembly instructions,
+production access blockers and state-safe rollback checklist are in
+[vps-stage4-acceptance.md](vps-stage4-acceptance.md). It distinguishes
+stubbed local E2E from an authorized deployment on a constrained VPS.
+
 ```sh
 npm run lint
 npx vitest run packages/daemon/test/event-bus.test.ts \
