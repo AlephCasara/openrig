@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
-import { EventBus } from "../src/domain/event-bus.js";
+import { EventBus, NOTIFY_DRAIN_PAGE_SIZE } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import type { PersistedEvent } from "../src/domain/types.js";
 
@@ -262,5 +262,35 @@ describe("W2b exact-set notify envelope", () => {
 
     expect(received).toHaveLength(1);
     expect(received[0]).toMatchObject({ type: "rig.deleted", rigId: "rig-that-does-not-exist" });
+  });
+
+  it("drains a large committed backlog in bounded pages while preserving nested fanout order", () => {
+    const received: PersistedEvent[] = [];
+    const total = NOTIFY_DRAIN_PAGE_SIZE * 2 + 9;
+    const inserted: number[] = [];
+    const insert = db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)");
+    const prepareSpy = vi.spyOn(db, "prepare");
+
+    bus.subscribe((event) => {
+      received.push(event);
+      if (event.seq === inserted[NOTIFY_DRAIN_PAGE_SIZE - 1]) {
+        // A subscriber emits while the drain is active; that event must arrive
+        // after the already committed batch, never twice or out of sequence.
+        bus.emit({ type: "view.changed", viewName: "nested", cause: "test" });
+      }
+    });
+
+    bus.withNotifyEnvelope(() => {
+      for (let i = 0; i < total; i++) {
+        const payload = JSON.stringify({ type: "view.changed", viewName: `bulk-${i}`, cause: "test" });
+        inserted.push(Number(insert.run(null, null, "view.changed", payload).lastInsertRowid));
+      }
+    });
+
+    expect(received.map(e => e.seq)).toEqual([...inserted, inserted[inserted.length - 1]! + 1]);
+    expect(received.at(-1)).toMatchObject({ type: "view.changed", viewName: "nested" });
+    expect(prepareSpy.mock.calls.some(call => String(call[0]).includes("ORDER BY seq LIMIT ?"))).toBe(true);
+    expect(bus.getNotifyDrainStatus().watermark).toBe(received.at(-1)!.seq);
+    prepareSpy.mockRestore();
   });
 });

@@ -7,6 +7,9 @@ export const eventsRoute = new Hono();
 
 /** A replay is read and written this many events at a time, never built whole. */
 const REPLAY_PAGE = 500;
+/** Hard per-connection cap: a slow SSE client must not grow the daemon heap indefinitely.
+ * EventSource reconnects with Last-Event-ID and resumes from durable SQLite history. */
+export const MAX_PENDING_SSE_EVENTS = 256;
 
 function getEventBus(c: { get: (key: string) => unknown }): EventBus {
   return c.get("eventBus" as never) as EventBus;
@@ -26,10 +29,27 @@ eventsRoute.get("/", (c) => {
   const eventBus = getEventBus(c);
 
   return streamSSE(c, async (stream) => {
-    // Buffer for live events arriving during replay
+    // A bounded buffer for live events arriving during replay.
     const buffer: PersistedEvent[] = [];
     let replaying = true;
     let maxReplayedSeq = 0;
+    let pendingWrites = 0;
+    let liveWrites = Promise.resolve();
+    let terminated = false;
+    let terminate: () => void = () => {};
+    const termination = new Promise<void>(resolve => { terminate = resolve; });
+    const disconnectSlowClient = () => {
+      if (terminated) return;
+      terminated = true;
+      // No events are discarded from the database. The client can reconnect
+      // using its last received SSE id. Avoid holding more messages in RAM.
+      // Hono's close() waits for an outstanding writer.write(), which never
+      // resolves when a client stops reading. abort() cancels the internal
+      // readable side and releases that blocked write, allowing finally to
+      // unsubscribe even with a permanently stalled client.
+      stream.abort();
+      terminate();
+    };
 
     // 1. Subscribe to live bus BEFORE replay query (no gap)
     const unsubscribe = eventBus.subscribe((event) => {
@@ -38,12 +58,30 @@ eventsRoute.get("/", (c) => {
         const eventRigId = "rigId" in event ? (event as { rigId: string }).rigId : null;
         if (eventRigId !== rigId) return;
       }
+      if (terminated || stream.aborted) return;
       if (replaying) {
+        if (buffer.length >= MAX_PENDING_SSE_EVENTS) {
+          disconnectSlowClient();
+          return;
+        }
         buffer.push(event);
       } else {
-        // Stream directly — skip if already sent during replay
+        // Serialize live writes: fire-and-forget writes without backpressure
+        // otherwise accumulate an unbounded number of pending promises.
         if (event.seq <= maxReplayedSeq) return;
-        stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) }).catch(() => {});
+        if (pendingWrites >= MAX_PENDING_SSE_EVENTS) {
+          disconnectSlowClient();
+          return;
+        }
+        pendingWrites++;
+        maxReplayedSeq = event.seq;
+        liveWrites = liveWrites.then(async () => {
+          if (!terminated && !stream.aborted) {
+            await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
+          }
+        }).catch(() => {
+          disconnectSlowClient();
+        }).finally(() => { pendingWrites--; });
       }
     });
 
@@ -63,9 +101,10 @@ eventsRoute.get("/", (c) => {
       const upTo = eventBus.maxSeq();
 
       // 2. Replay missed events from DB, a page at a time
-      for (let page = eventBus.replayPage(lastSeq, upTo, REPLAY_PAGE, rigId); page.length > 0 && !stream.aborted;
+      for (let page = eventBus.replayPage(lastSeq, upTo, REPLAY_PAGE, rigId); page.length > 0 && !stream.aborted && !terminated;
         page = eventBus.replayPage(maxReplayedSeq, upTo, REPLAY_PAGE, rigId)) {
         for (const event of page) {
+          if (terminated || stream.aborted) break;
           await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
           if (event.seq > maxReplayedSeq) maxReplayedSeq = event.seq;
         }
@@ -74,20 +113,22 @@ eventsRoute.get("/", (c) => {
       // 3. Drain buffer while still in replaying mode (new live events
       //    continue to buffer, preserving monotonic ordering)
       //    Drain in a loop since new events may arrive during drain.
-      while (buffer.length > 0) {
-        const snapshot = buffer.splice(0);
-        for (const event of snapshot) {
-          if (event.seq <= maxReplayedSeq) continue; // dedup
-          await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
-          if (event.seq > maxReplayedSeq) maxReplayedSeq = event.seq;
-        }
+      while (buffer.length > 0 && !stream.aborted && !terminated) {
+        // shift() is cheap for a maximum of 256 entries and avoids holding a
+        // second full snapshot while new events arrive during an await.
+        const event = buffer.shift()!;
+        if (event.seq <= maxReplayedSeq) continue;
+        await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
+        if (event.seq > maxReplayedSeq) maxReplayedSeq = event.seq;
       }
 
       // 4. Switch to live mode — new events go directly to stream
+      if (terminated || stream.aborted) return;
       replaying = false;
 
-      // 4. Keep stream alive until client disconnects
-      await aborted;
+      // Keep the stream alive until client disconnects or the bounded queue
+      // overflows and this connection closes for resume.
+      await Promise.race([aborted, termination]);
     } finally {
       unsubscribe();
     }

@@ -4,6 +4,7 @@ import type { Hono } from "hono";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { EventBus } from "../src/domain/event-bus.js";
+import { MAX_PENDING_SSE_EVENTS } from "../src/routes/events.js";
 import { createDaemon } from "../src/startup.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
 import type { CmuxTransportFactory } from "../src/adapters/cmux.js";
@@ -175,6 +176,65 @@ describe("SSE events route", () => {
     // readSSEEvents calls reader.cancel() — give the stream time to clean up
     await new Promise((r) => setTimeout(r, 100));
     expect(eventBus.subscriberCount).toBe(countBefore);
+  });
+
+  it("a replay flood disconnects the slow connection and can resume every event from SQLite", async () => {
+    const rig = rigRepo.createRig("r01");
+    const countBefore = eventBus.subscriberCount;
+    const originalPage = eventBus.replayPage.bind(eventBus);
+    const emitted: number[] = [];
+    vi.spyOn(eventBus, "replayPage").mockImplementationOnce((...args) => {
+      // Runs after subscription and before the first replay page resolves.
+      // A finite hard cap prevents this flood from accumulating on the heap.
+      for (let i = 0; i < MAX_PENDING_SSE_EVENTS + 1; i++) {
+        emitted.push(eventBus.emit({ type: "rig.created", rigId: rig.id }).seq);
+      }
+      return originalPage(...args);
+    });
+
+    const overloaded = await app.request(`/api/events?rigId=${rig.id}&replay=0`);
+    await overloaded.body?.cancel();
+    await vi.waitFor(() => expect(eventBus.subscriberCount).toBe(countBefore), { timeout: 1000 });
+
+    vi.restoreAllMocks();
+    const resumed = await app.request(`/api/events?rigId=${rig.id}&replay=all`);
+    const events = await readSSEEvents(resumed, emitted.length, 3000);
+    expect(events.map(e => Number(e.id))).toEqual(emitted);
+  });
+
+  it("releases the subscriber when replay is backpressured by a client that never reads", async () => {
+    const rig = rigRepo.createRig("r01");
+    for (let i = 0; i < 10; i++) {
+      eventBus.emit({ type: "rig.created", rigId: rig.id });
+    }
+    const countBefore = eventBus.subscriberCount;
+    const response = await app.request(`/api/events?rigId=${rig.id}&replay=all`);
+    try {
+      expect(eventBus.subscriberCount).toBe(countBefore + 1);
+      // Deliberately never read response.body: the replay writer will block.
+      for (let i = 0; i < MAX_PENDING_SSE_EVENTS + 1; i++) {
+        eventBus.emit({ type: "rig.created", rigId: rig.id });
+      }
+      await vi.waitFor(() => expect(eventBus.subscriberCount).toBe(countBefore), { timeout: 700 });
+    } finally {
+      await response.body?.cancel().catch(() => {});
+    }
+  });
+
+  it("bursty live writes are bounded and resumable on reconnect", async () => {
+    const rig = rigRepo.createRig("r01");
+    const countBefore = eventBus.subscriberCount;
+    const live = await app.request(`/api/events?rigId=${rig.id}&replay=0`);
+    const emitted: number[] = [];
+    // Synchronous emissions arrive before the pending write chain flushes.
+    for (let i = 0; i < MAX_PENDING_SSE_EVENTS + 1; i++) {
+      emitted.push(eventBus.emit({ type: "rig.created", rigId: rig.id }).seq);
+    }
+    await vi.waitFor(() => expect(eventBus.subscriberCount).toBe(countBefore), { timeout: 1000 });
+    await live.body?.cancel().catch(() => {});
+    const resumed = await app.request(`/api/events?rigId=${rig.id}&replay=all`);
+    const events = await readSSEEvents(resumed, emitted.length, 3000);
+    expect(events.map(e => Number(e.id))).toEqual(emitted);
   });
 
   it("rigId filter: only events for requested rig are streamed", async () => {
