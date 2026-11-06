@@ -7,9 +7,25 @@ export const eventsRoute = new Hono();
 
 /** A replay is read and written this many events at a time, never built whole. */
 const REPLAY_PAGE = 500;
+/** Bound SQLite replay materialization by bytes as well as event count. */
+const REPLAY_PAGE_MAX_BYTES = 4 * 1024 * 1024;
 /** Hard per-connection cap: a slow SSE client must not grow the daemon heap indefinitely.
  * EventSource reconnects with Last-Event-ID and resumes from durable SQLite history. */
 export const MAX_PENDING_SSE_EVENTS = 256;
+/** Conservative per-connection budget for queued JS SSE strings (UTF-16 size).
+ * The event-count cap alone does not bound the memory used by large payloads. */
+export const MAX_PENDING_SSE_BYTES = 4 * 1024 * 1024;
+
+interface PendingSseEvent {
+  seq: number;
+  data: string;
+  estimatedBytes: number;
+}
+
+function encodePendingEvent(event: PersistedEvent): PendingSseEvent {
+  const data = JSON.stringify(event);
+  return { seq: event.seq, data, estimatedBytes: data.length * 2 };
+}
 
 function getEventBus(c: { get: (key: string) => unknown }): EventBus {
   return c.get("eventBus" as never) as EventBus;
@@ -30,10 +46,12 @@ eventsRoute.get("/", (c) => {
 
   return streamSSE(c, async (stream) => {
     // A bounded buffer for live events arriving during replay.
-    const buffer: PersistedEvent[] = [];
+    const buffer: PendingSseEvent[] = [];
+    let bufferedBytes = 0;
     let replaying = true;
     let maxReplayedSeq = 0;
     let pendingWrites = 0;
+    let pendingWriteBytes = 0;
     let liveWrites = Promise.resolve();
     let terminated = false;
     let terminate: () => void = () => {};
@@ -64,7 +82,13 @@ eventsRoute.get("/", (c) => {
           disconnectSlowClient();
           return;
         }
-        buffer.push(event);
+        const queued = encodePendingEvent(event);
+        if (bufferedBytes + queued.estimatedBytes > MAX_PENDING_SSE_BYTES) {
+          disconnectSlowClient();
+          return;
+        }
+        bufferedBytes += queued.estimatedBytes;
+        buffer.push(queued);
       } else {
         // Serialize live writes: fire-and-forget writes without backpressure
         // otherwise accumulate an unbounded number of pending promises.
@@ -73,15 +97,24 @@ eventsRoute.get("/", (c) => {
           disconnectSlowClient();
           return;
         }
+        const queued = encodePendingEvent(event);
+        if (pendingWriteBytes + queued.estimatedBytes > MAX_PENDING_SSE_BYTES) {
+          disconnectSlowClient();
+          return;
+        }
         pendingWrites++;
+        pendingWriteBytes += queued.estimatedBytes;
         maxReplayedSeq = event.seq;
         liveWrites = liveWrites.then(async () => {
           if (!terminated && !stream.aborted) {
-            await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
+            await stream.writeSSE({ id: String(queued.seq), data: queued.data });
           }
         }).catch(() => {
           disconnectSlowClient();
-        }).finally(() => { pendingWrites--; });
+        }).finally(() => {
+          pendingWrites--;
+          pendingWriteBytes -= queued.estimatedBytes;
+        });
       }
     });
 
@@ -92,17 +125,27 @@ eventsRoute.get("/", (c) => {
     try {
       // Where the replay starts, read once subscribed: an event stored after it is either replayed or buffered. Without
       // Last-Event-ID, `?replay=<n>` replays the newest n (0: from now on), the whole log when it holds no more.
-      const lastSeq = lastEventId !== null ? (isNaN(lastEventId) ? 0 : lastEventId)
+      let lastSeq = lastEventId !== null ? (isNaN(lastEventId) ? 0 : lastEventId)
         : replayCount === null ? 0
         : eventBus.seqBeforeNewest(replayCount, rigId);
-      maxReplayedSeq = lastSeq;
       // Where it ends, read once subscribed too: an event stored after it is buffered, so events arriving while the
       // pages are written can neither keep the replay going nor be sent twice.
       const upTo = eventBus.maxSeq();
+      // A browser can retain an SSE id from a database that has since been
+      // recreated/restored. Trusting an id above the current maximum would
+      // silently discard EVERY new live event until the old maximum is reached.
+      // Replay the available log instead; never suppress future events.
+      if (lastSeq > upTo || lastSeq < 0) {
+        // If this client requested a bounded initial history, respect that
+        // budget even after database recreation instead of replaying years
+        // of history. Older clients without replay= retain full replay.
+        lastSeq = replayCount === null ? 0 : eventBus.seqBeforeNewest(replayCount, rigId);
+      }
+      maxReplayedSeq = lastSeq;
 
       // 2. Replay missed events from DB, a page at a time
-      for (let page = eventBus.replayPage(lastSeq, upTo, REPLAY_PAGE, rigId); page.length > 0 && !stream.aborted && !terminated;
-        page = eventBus.replayPage(maxReplayedSeq, upTo, REPLAY_PAGE, rigId)) {
+      for (let page = eventBus.replayPage(lastSeq, upTo, REPLAY_PAGE, rigId, REPLAY_PAGE_MAX_BYTES); page.length > 0 && !stream.aborted && !terminated;
+        page = eventBus.replayPage(maxReplayedSeq, upTo, REPLAY_PAGE, rigId, REPLAY_PAGE_MAX_BYTES)) {
         for (const event of page) {
           if (terminated || stream.aborted) break;
           await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
@@ -117,8 +160,9 @@ eventsRoute.get("/", (c) => {
         // shift() is cheap for a maximum of 256 entries and avoids holding a
         // second full snapshot while new events arrive during an await.
         const event = buffer.shift()!;
+        bufferedBytes -= event.estimatedBytes;
         if (event.seq <= maxReplayedSeq) continue;
-        await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
+        await stream.writeSSE({ id: String(event.seq), data: event.data });
         if (event.seq > maxReplayedSeq) maxReplayedSeq = event.seq;
       }
 

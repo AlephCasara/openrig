@@ -119,6 +119,29 @@ describe("SSE events route", () => {
     expect(events[0]!.id).toBe(String(e2.seq));
   });
 
+  it("recovers when Last-Event-ID is ahead of a recreated event database", async () => {
+    const rig = rigRepo.createRig("fresh-db");
+    const first = eventBus.emit({ type: "rig.created", rigId: rig.id });
+    // The browser may remember an SSE id from before the database was
+    // recreated/restored. Its old watermark must not suppress every new event.
+    const response = await app.request(`/api/events?rigId=${rig.id}`, {
+      headers: { "Last-Event-ID": String(first.seq + 100_000) },
+    });
+    setTimeout(() => eventBus.emit({ type: "rig.created", rigId: rig.id }), 10);
+    const received = await readSSEEvents(response, 2, 1000);
+    expect(received.map(e => Number(e.id))).toEqual([first.seq, first.seq + 1]);
+  });
+
+  it("respects a bounded replay tail when a stale Last-Event-ID is ahead of the database", async () => {
+    const rig = rigRepo.createRig("fresh-db-tail");
+    const emitted = Array.from({ length: 12 }, () => eventBus.emit({ type: "rig.created", rigId: rig.id }).seq);
+    const response = await app.request(`/api/events?rigId=${rig.id}&replay=3`, {
+      headers: { "Last-Event-ID": "99999999" },
+    });
+    const received = await readSSEEvents(response, 3, 1000);
+    expect(received.map(e => Number(e.id))).toEqual(emitted.slice(-3));
+  });
+
   it("no gap: event emitted during replay window delivered exactly once", async () => {
     const rig = rigRepo.createRig("r01");
 
@@ -235,6 +258,31 @@ describe("SSE events route", () => {
     const resumed = await app.request(`/api/events?rigId=${rig.id}&replay=all`);
     const events = await readSSEEvents(resumed, emitted.length, 3000);
     expect(events.map(e => Number(e.id))).toEqual(emitted);
+  });
+
+  it("disconnects a stalled live reader when queued payload bytes exceed a low-RAM budget before the event count cap", async () => {
+    const rig = rigRepo.createRig("large-live-frames");
+    const before = eventBus.subscriberCount;
+    const response = await app.request(`/api/events?rigId=${rig.id}&replay=0`);
+    try {
+      expect(eventBus.subscriberCount).toBe(before + 1);
+      // 48 × 128 KiB is far below 256 queued EVENTS but still several MiB
+      // of retained SSE payloads if queue length is the only bound.
+      const large = "x".repeat(128 * 1024);
+      const deliveredSeqs: number[] = [];
+      for (let i = 0; i < 48; i++) {
+        deliveredSeqs.push(eventBus.emit({
+          type: "rig.created", rigId: rig.id, large,
+        } as Parameters<EventBus["emit"]>[0]).seq);
+      }
+      expect(deliveredSeqs).toHaveLength(48);
+      expect(deliveredSeqs.length).toBeLessThan(MAX_PENDING_SSE_EVENTS);
+      await vi.waitFor(() => expect(eventBus.subscriberCount).toBe(before), { timeout: 1500 });
+      // Overflow aborts the connection, never deletes the durable event log.
+      expect(eventBus.replayAll(deliveredSeqs[0]! - 1).map(e => e.seq)).toEqual(deliveredSeqs);
+    } finally {
+      await response.body?.cancel().catch(() => {});
+    }
   });
 
   it("rigId filter: only events for requested rig are streamed", async () => {

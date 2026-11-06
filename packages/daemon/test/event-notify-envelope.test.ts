@@ -293,4 +293,24 @@ describe("W2b exact-set notify envelope", () => {
     expect(bus.getNotifyDrainStatus().watermark).toBe(received.at(-1)!.seq);
     prepareSpy.mockRestore();
   });
+
+  it("bounds SSE replay pages by payload bytes and advances the cursor without losing rows", () => {
+    const insert = db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)");
+    const payload = JSON.stringify({ type: "view.changed", cause: "replay-test", viewName: "x".repeat(256 * 1024) });
+    const ids: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      ids.push(Number(insert.run(null, null, "view.changed", payload).lastInsertRowid));
+    }
+    const upTo = bus.maxSeq();
+    const read: number[] = [];
+    let cursor = 0;
+    while (cursor < upTo) {
+      const page = bus.replayPage(cursor, upTo, 500, undefined, 1024 * 1024);
+      expect(page.length).toBeGreaterThan(0);
+      expect(page.length).toBeLessThan(12);
+      read.push(...page.map(row => row.seq));
+      cursor = page[page.length - 1]!.seq;
+    }
+    expect(read).toEqual(ids);
+  });
 });
