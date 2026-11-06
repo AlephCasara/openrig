@@ -13,8 +13,12 @@ export interface TopologyEventStatus {
 type TopologyEventListener = (event: TopologyEvent, rawData: string) => void;
 type TopologyStatusListener = (status: TopologyEventStatus) => void;
 
-const GLOBAL_EVENTS_URL = "/api/events";
 const MAX_REPLAY_EVENTS = 100;
+// The hub only retains 100 events for the activity feed. Asking the daemon
+// to replay its entire durable log on every page load wasted memory, SQLite
+// reads and network traffic; EventSource Last-Event-ID still takes precedence
+// on reconnect and preserves missed-event recovery.
+const GLOBAL_EVENTS_URL = `/api/events?replay=${MAX_REPLAY_EVENTS}`;
 
 interface CachedTopologyEvent {
   event: TopologyEvent;
