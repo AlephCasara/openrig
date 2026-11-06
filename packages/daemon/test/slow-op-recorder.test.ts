@@ -38,7 +38,9 @@ async function createTestDaemon(
   };
   try {
     const daemon = await createDaemon(options);
-    expect(fetchedUrls).toEqual([pluginVendorUrl]);
+    // A remote v0 release probe cannot change installed plugin bytes and is
+    // now opt-in; this daemon fixture must not contact it by default.
+    expect(fetchedUrls).toEqual([]);
     return daemon;
   } finally {
     globalThis.fetch = originalFetch;

@@ -548,6 +548,40 @@ describe("PluginVendorService — auto-fetch (HG-2.4 + HG-2.5)", () => {
 });
 
 describe("PluginVendorService — ensureLatest orchestration", () => {
+  it("startup defaults to local vendored authority without outbound fetch", async () => {
+    const fs = mockFs(VENDORED_OPENRIG_CORE);
+    const httpClient = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const svc = new PluginVendorService({
+      vendoredAssetsDir: "/asset-root",
+      userPluginsDir: "/home/test/.openrig/plugins",
+      fs,
+      httpClient,
+      logger: vi.fn(),
+    });
+
+    await svc.ensureAtStartup("openrig-core");
+
+    expect(fs._store["/home/test/.openrig/plugins/openrig-core/.claude-plugin/plugin.json"]).toBeDefined();
+    expect(httpClient).not.toHaveBeenCalled();
+  });
+
+  it("allows an explicit startup fetch probe without changing installed authority", async () => {
+    const fs = mockFs(VENDORED_OPENRIG_CORE);
+    const httpClient = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const svc = new PluginVendorService({
+      vendoredAssetsDir: "/asset-root",
+      userPluginsDir: "/home/test/.openrig/plugins",
+      fs,
+      httpClient,
+      logger: vi.fn(),
+    });
+
+    await svc.ensureAtStartup("openrig-core", { probeRemote: true });
+
+    expect(httpClient).toHaveBeenCalledTimes(1);
+    expect(fs._store["/home/test/.openrig/plugins/openrig-core/.claude-plugin/plugin.json"]).toBeDefined();
+  });
+
   it("ensureLatest calls ensureVendored first then attemptAutoFetch (vendored fallback ALWAYS available)", async () => {
     const fs = mockFs(VENDORED_OPENRIG_CORE);
     const httpClient = vi.fn().mockResolvedValue({ ok: false, status: 404 });

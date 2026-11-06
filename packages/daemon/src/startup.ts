@@ -1055,7 +1055,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       httpClient,
       logger: (...args) => console.log("[openrig]", ...args),
     });
-    await vendorService.ensureLatest("openrig-core");
+    // A remote release probe cannot install any bytes in the current v0
+    // implementation. Avoid GitHub traffic and up to 5s startup delay on
+    // low-RAM/offline hosts unless an operator explicitly requests the probe.
+    await vendorService.ensureAtStartup("openrig-core", {
+      probeRemote: process.env["OPENRIG_PLUGIN_VENDOR_PROBE_ON_START"] === "1",
+    });
     for (const skill of ["openrig-skills", "refocusing"]) {
       try {
         vendorService.ensureSkillGlobally("openrig-core", skill, [
@@ -2735,14 +2740,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // S20 — bind provenance rides the health surface (absent = legacy healthz body).
   deps.bindPlan = opts?.bindPlan;
 
-  // Hermeticity (hotfix FIX 2): the REAL daemon
-  // constructs the drift observer here with an eagerly-warmed mode cache — the
-  // boot-time warm the observer's constructor used to do. Constructing it at
-  // the boot boundary (not inside createApp) is what keeps test-built apps
-  // from ever shelling `claude --help`.
+  // Construct the observer without running `claude --help` for every daemon
+  // start, including installations without an active Claude seat. The cache
+  // asynchronously warms itself on its first actual permission-mode read,
+  // returning UNKNOWN until the bounded probe completes.
   const { PermissionDriftObserver, ClaudePermissionModeCache } = await import("./domain/permission-drift-observer.js");
   const permissionModes = new ClaudePermissionModeCache();
-  permissionModes.warm();
   deps.permissionDriftObserver = new PermissionDriftObserver({ db, permissionModes });
 
   // S10 (OPR.0.5.5.10) — activate the gateway as an IN-DAEMON SUBSYSTEM at boot (M1 §3 as
