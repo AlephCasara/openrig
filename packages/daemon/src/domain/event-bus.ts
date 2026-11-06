@@ -214,15 +214,35 @@ export class EventBus {
 
   private pageStatements?: { all: Database.Statement; rig: Database.Statement };
 
-  /** Up to `limit` events after `seq` and up to `upTo`, oldest first, of one rig when `rigId` is given: a replay read a
-   *  page at a time, which events stored meanwhile never lengthen. */
-  replayPage(seq: number, upTo: number, limit: number, rigId?: string): PersistedEvent[] {
+  /** Up to `limit` events after `seq` and up to `upTo`, oldest first, of one rig when `rigId` is given.
+   * A caller may also cap the approximate UTF-16 payload bytes held per page.
+   * One oversized event is always returned so a cursor cannot stall forever. */
+  replayPage(seq: number, upTo: number, limit: number, rigId?: string, maxPayloadBytes?: number): PersistedEvent[] {
     this.pageStatements ??= {
       all: this.db.prepare("SELECT seq, rig_id, node_id, type, payload, created_at FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?"),
       rig: this.db.prepare("SELECT seq, rig_id, node_id, type, payload, created_at FROM events WHERE rig_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?"),
     };
-    const rows = (rigId ? this.pageStatements.rig.all(rigId, seq, upTo, limit) : this.pageStatements.all.all(seq, upTo, limit)) as EventRow[];
-    return rows.map((row) => this.rowToPersistedEvent(row));
+    const statement = rigId ? this.pageStatements.rig : this.pageStatements.all;
+    const args = rigId ? [rigId, seq, upTo, limit] : [seq, upTo, limit];
+    if (maxPayloadBytes === undefined) {
+      return (statement.all(...args) as EventRow[]).map((row) => this.rowToPersistedEvent(row));
+    }
+    if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes < 1) {
+      throw new Error("replay page byte budget must be a positive safe integer");
+    }
+    // SQLite's iterator retrieves rows incrementally. `all()` would hold
+    // hundreds of potentially multi-MiB JSON strings before the first SSE
+    // write; a LIMIT on row count does not cap those allocations.
+    const result: PersistedEvent[] = [];
+    let bytes = 0;
+    for (const row of statement.iterate(...args) as IterableIterator<EventRow>) {
+      const rowBytes = row.payload.length * 2; // conservative JS string estimate
+      if (result.length > 0 && bytes + rowBytes > maxPayloadBytes) break;
+      result.push(this.rowToPersistedEvent(row));
+      bytes += rowBytes;
+      if (bytes >= maxPayloadBytes) break;
+    }
+    return result;
   }
 
   /** The seq after which the newest `count` events start (of one rig when `rigId` is given): 0 when there are no more
