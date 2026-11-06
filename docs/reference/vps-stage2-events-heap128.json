@@ -1,0 +1,73 @@
+{
+  "measuredAt": "2026-11-06T14:09:10.506Z",
+  "heapMb": 128,
+  "repeats": 2,
+  "cases": [
+    [
+      12000,
+      8192
+    ]
+  ],
+  "samples": [
+    {
+      "variant": "baseline",
+      "repeat": 0,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 375,
+      "peakRssMb": 402.4,
+      "finalRssMb": 402.4,
+      "heapUsedMb": 124.5
+    },
+    {
+      "variant": "modified",
+      "repeat": 0,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 300,
+      "peakRssMb": 275.4,
+      "finalRssMb": 275.4,
+      "heapUsedMb": 15.2
+    },
+    {
+      "variant": "modified",
+      "repeat": 1,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 320,
+      "peakRssMb": 276.1,
+      "finalRssMb": 276.1,
+      "heapUsedMb": 14.8
+    },
+    {
+      "variant": "baseline",
+      "repeat": 1,
+      "count": 12000,
+      "bytes": 8192,
+      "exitCode": 0,
+      "signal": null,
+      "events": 12000,
+      "payloadBytes": 8173,
+      "delivered": 12000,
+      "elapsedMs": 378,
+      "peakRssMb": 402.4,
+      "finalRssMb": 402.4,
+      "heapUsedMb": 124.2
+    }
+  ]
+}

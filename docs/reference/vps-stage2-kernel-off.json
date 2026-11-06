@@ -1,0 +1,460 @@
+{
+  "methodology": "Sequential paired isolated Node daemon processes, local machine; V8 heap cap, not a physical RAM/cgroup cap",
+  "collectedAt": "2026-11-06T14:48:20.470Z",
+  "node": "v24.20.0",
+  "hostCpuCount": 24,
+  "hostRamMb": 31242,
+  "sharedCgroupMemoryLimitMb": 12288,
+  "worktrees": {
+    "baseline": {
+      "directory": "openrig-baseline-vps",
+      "revision": "f68d28e417239fd0173f1954241f266e84bf1c3c"
+    },
+    "modified": {
+      "directory": "GoS_open-rig",
+      "revision": "withdrawn-pre-sanitization-revision"
+    }
+  },
+  "repeats": 3,
+  "heaps": [
+    128
+  ],
+  "uiStates": [
+    "0"
+  ],
+  "samples": [
+    {
+      "variant": "baseline",
+      "heapMb": 128,
+      "uiEnabled": false,
+      "repeat": 0,
+      "exitCode": 0,
+      "signal": null,
+      "revision": "f68d28e417239fd0173f1954241f266e84bf1c3c",
+      "modified": false,
+      "node": "v24.20.0",
+      "heapLimitMb": 128,
+      "host": "isolated local process, not a verified VPS",
+      "webUiEnabled": false,
+      "transcriptsEnabled": true,
+      "kernelAutoBootEnabled": false,
+      "startupMs": 1228,
+      "idleRssMb": 238.7,
+      "sampledPeakProcessTreeRssMb": 301.4,
+      "sampledPeakProcessBreakdown": {
+        "phase": "idle",
+        "members": [
+          {
+            "role": "daemon",
+            "comm": "MainThread",
+            "rssMb": 238.8
+          },
+          {
+            "role": "descendant",
+            "comm": ".claude-wrapped",
+            "rssMb": 62.6
+          }
+        ]
+      },
+      "daemonHighWaterRssMb": 239.2,
+      "cooldownRssMb": 239.2,
+      "sampledPeakProcessCount": 2,
+      "sampledAvgCpuPercentOfOneCore": 24.2,
+      "requests": 120,
+      "concurrency": 8,
+      "requestMs": 111,
+      "throughputRps": 1081.1,
+      "httpCodes": {
+        "200": 80,
+        "404": 40
+      },
+      "codesByPath": {
+        "/api/health": {
+          "200": 20
+        },
+        "/api/plugins": {
+          "200": 20
+        },
+        "/api/telemetry/usage/cost": {
+          "200": 20
+        },
+        "/api/gateway/slack/status": {
+          "200": 20
+        },
+        "/": {
+          "404": 20
+        },
+        "/specs": {
+          "404": 20
+        }
+      },
+      "unexpected": []
+    },
+    {
+      "variant": "modified",
+      "heapMb": 128,
+      "uiEnabled": false,
+      "repeat": 0,
+      "exitCode": 0,
+      "signal": null,
+      "revision": "withdrawn-pre-sanitization-revision",
+      "modified": true,
+      "node": "v24.20.0",
+      "heapLimitMb": 128,
+      "host": "isolated local process, not a verified VPS",
+      "webUiEnabled": false,
+      "transcriptsEnabled": true,
+      "kernelAutoBootEnabled": false,
+      "startupMs": 923,
+      "idleRssMb": 236.9,
+      "sampledPeakProcessTreeRssMb": 277.7,
+      "sampledPeakProcessBreakdown": {
+        "phase": "startup",
+        "members": [
+          {
+            "role": "daemon",
+            "comm": "MainThread",
+            "rssMb": 236.8
+          },
+          {
+            "role": "descendant",
+            "comm": ".claude-wrapped",
+            "rssMb": 40.9
+          }
+        ]
+      },
+      "daemonHighWaterRssMb": 237.4,
+      "cooldownRssMb": 237.4,
+      "sampledPeakProcessCount": 2,
+      "sampledAvgCpuPercentOfOneCore": 22.5,
+      "requests": 120,
+      "concurrency": 8,
+      "requestMs": 76,
+      "throughputRps": 1578.9,
+      "httpCodes": {
+        "200": 80,
+        "404": 40
+      },
+      "codesByPath": {
+        "/api/health": {
+          "200": 20
+        },
+        "/api/plugins": {
+          "200": 20
+        },
+        "/api/telemetry/usage/cost": {
+          "200": 20
+        },
+        "/api/gateway/slack/status": {
+          "200": 20
+        },
+        "/": {
+          "404": 20
+        },
+        "/specs": {
+          "404": 20
+        }
+      },
+      "unexpected": []
+    },
+    {
+      "variant": "modified",
+      "heapMb": 128,
+      "uiEnabled": false,
+      "repeat": 1,
+      "exitCode": 0,
+      "signal": null,
+      "revision": "withdrawn-pre-sanitization-revision",
+      "modified": true,
+      "node": "v24.20.0",
+      "heapLimitMb": 128,
+      "host": "isolated local process, not a verified VPS",
+      "webUiEnabled": false,
+      "transcriptsEnabled": true,
+      "kernelAutoBootEnabled": false,
+      "startupMs": 924,
+      "idleRssMb": 218.1,
+      "sampledPeakProcessTreeRssMb": 288.2,
+      "sampledPeakProcessBreakdown": {
+        "phase": "startup",
+        "members": [
+          {
+            "role": "daemon",
+            "comm": "MainThread",
+            "rssMb": 218.1
+          },
+          {
+            "role": "descendant",
+            "comm": ".claude-wrapped",
+            "rssMb": 70.1
+          }
+        ]
+      },
+      "daemonHighWaterRssMb": 218.6,
+      "cooldownRssMb": 218.6,
+      "sampledPeakProcessCount": 2,
+      "sampledAvgCpuPercentOfOneCore": 22.4,
+      "requests": 120,
+      "concurrency": 8,
+      "requestMs": 111,
+      "throughputRps": 1081.1,
+      "httpCodes": {
+        "200": 80,
+        "404": 40
+      },
+      "codesByPath": {
+        "/api/health": {
+          "200": 20
+        },
+        "/api/plugins": {
+          "200": 20
+        },
+        "/api/telemetry/usage/cost": {
+          "200": 20
+        },
+        "/api/gateway/slack/status": {
+          "200": 20
+        },
+        "/": {
+          "404": 20
+        },
+        "/specs": {
+          "404": 20
+        }
+      },
+      "unexpected": []
+    },
+    {
+      "variant": "baseline",
+      "heapMb": 128,
+      "uiEnabled": false,
+      "repeat": 1,
+      "exitCode": 0,
+      "signal": null,
+      "revision": "f68d28e417239fd0173f1954241f266e84bf1c3c",
+      "modified": false,
+      "node": "v24.20.0",
+      "heapLimitMb": 128,
+      "host": "isolated local process, not a verified VPS",
+      "webUiEnabled": false,
+      "transcriptsEnabled": true,
+      "kernelAutoBootEnabled": false,
+      "startupMs": 923,
+      "idleRssMb": 236.1,
+      "sampledPeakProcessTreeRssMb": 236.6,
+      "sampledPeakProcessBreakdown": {
+        "phase": "cooldown",
+        "members": [
+          {
+            "role": "daemon",
+            "comm": "MainThread",
+            "rssMb": 236.6
+          }
+        ]
+      },
+      "daemonHighWaterRssMb": 236.6,
+      "cooldownRssMb": 236.6,
+      "sampledPeakProcessCount": 1,
+      "sampledAvgCpuPercentOfOneCore": 23.3,
+      "requests": 120,
+      "concurrency": 8,
+      "requestMs": 101,
+      "throughputRps": 1188.1,
+      "httpCodes": {
+        "200": 80,
+        "404": 40
+      },
+      "codesByPath": {
+        "/api/health": {
+          "200": 20
+        },
+        "/api/plugins": {
+          "200": 20
+        },
+        "/api/telemetry/usage/cost": {
+          "200": 20
+        },
+        "/api/gateway/slack/status": {
+          "200": 20
+        },
+        "/": {
+          "404": 20
+        },
+        "/specs": {
+          "404": 20
+        }
+      },
+      "unexpected": []
+    },
+    {
+      "variant": "baseline",
+      "heapMb": 128,
+      "uiEnabled": false,
+      "repeat": 2,
+      "exitCode": 0,
+      "signal": null,
+      "revision": "f68d28e417239fd0173f1954241f266e84bf1c3c",
+      "modified": false,
+      "node": "v24.20.0",
+      "heapLimitMb": 128,
+      "host": "isolated local process, not a verified VPS",
+      "webUiEnabled": false,
+      "transcriptsEnabled": true,
+      "kernelAutoBootEnabled": false,
+      "startupMs": 922,
+      "idleRssMb": 222.6,
+      "sampledPeakProcessTreeRssMb": 267.4,
+      "sampledPeakProcessBreakdown": {
+        "phase": "startup",
+        "members": [
+          {
+            "role": "daemon",
+            "comm": "MainThread",
+            "rssMb": 222.3
+          },
+          {
+            "role": "descendant",
+            "comm": ".claude-wrapped",
+            "rssMb": 45.1
+          }
+        ]
+      },
+      "daemonHighWaterRssMb": 223.1,
+      "cooldownRssMb": 223.1,
+      "sampledPeakProcessCount": 2,
+      "sampledAvgCpuPercentOfOneCore": 25.4,
+      "requests": 120,
+      "concurrency": 8,
+      "requestMs": 79,
+      "throughputRps": 1519,
+      "httpCodes": {
+        "200": 80,
+        "404": 40
+      },
+      "codesByPath": {
+        "/api/health": {
+          "200": 20
+        },
+        "/api/plugins": {
+          "200": 20
+        },
+        "/api/telemetry/usage/cost": {
+          "200": 20
+        },
+        "/api/gateway/slack/status": {
+          "200": 20
+        },
+        "/": {
+          "404": 20
+        },
+        "/specs": {
+          "404": 20
+        }
+      },
+      "unexpected": []
+    },
+    {
+      "variant": "modified",
+      "heapMb": 128,
+      "uiEnabled": false,
+      "repeat": 2,
+      "exitCode": 0,
+      "signal": null,
+      "revision": "withdrawn-pre-sanitization-revision",
+      "modified": true,
+      "node": "v24.20.0",
+      "heapLimitMb": 128,
+      "host": "isolated local process, not a verified VPS",
+      "webUiEnabled": false,
+      "transcriptsEnabled": true,
+      "kernelAutoBootEnabled": false,
+      "startupMs": 922,
+      "idleRssMb": 222.8,
+      "sampledPeakProcessTreeRssMb": 267.6,
+      "sampledPeakProcessBreakdown": {
+        "phase": "startup",
+        "members": [
+          {
+            "role": "daemon",
+            "comm": "MainThread",
+            "rssMb": 221.7
+          },
+          {
+            "role": "descendant",
+            "comm": ".claude-wrapped",
+            "rssMb": 45.8
+          }
+        ]
+      },
+      "daemonHighWaterRssMb": 223.6,
+      "cooldownRssMb": 223.6,
+      "sampledPeakProcessCount": 2,
+      "sampledAvgCpuPercentOfOneCore": 23.9,
+      "requests": 120,
+      "concurrency": 8,
+      "requestMs": 74,
+      "throughputRps": 1621.6,
+      "httpCodes": {
+        "200": 80,
+        "404": 40
+      },
+      "codesByPath": {
+        "/api/health": {
+          "200": 20
+        },
+        "/api/plugins": {
+          "200": 20
+        },
+        "/api/telemetry/usage/cost": {
+          "200": 20
+        },
+        "/api/gateway/slack/status": {
+          "200": 20
+        },
+        "/": {
+          "404": 20
+        },
+        "/specs": {
+          "404": 20
+        }
+      },
+      "unexpected": []
+    }
+  ],
+  "summary": [
+    {
+      "heapMb": 128,
+      "uiEnabled": false,
+      "idleRssMb": {
+        "baseline": 236.1,
+        "modified": 222.8,
+        "delta": -13.3
+      },
+      "daemonHighWaterRssMb": {
+        "baseline": 236.6,
+        "modified": 223.6,
+        "delta": -13
+      },
+      "sampledPeakProcessTreeRssMb": {
+        "baseline": 267.4,
+        "modified": 277.7,
+        "delta": 10.3
+      },
+      "startupMs": {
+        "baseline": 923,
+        "modified": 923,
+        "delta": 0
+      },
+      "sampledAvgCpuPercentOfOneCore": {
+        "baseline": 24.2,
+        "modified": 22.5,
+        "delta": -1.7
+      },
+      "throughputRps": {
+        "baseline": 1188.1,
+        "modified": 1578.9,
+        "delta": 390.8
+      }
+    }
+  ]
+}
