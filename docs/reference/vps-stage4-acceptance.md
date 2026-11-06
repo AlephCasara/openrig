@@ -58,9 +58,10 @@ production-dependency advisories remain unresolved.
   reports a large JavaScript chunk warning, not a build failure.
 - `bash scripts/build-package.sh`: **passed**, including staging the daemon,
   UI/TUI, policies, specs, reference docs and 57 context packs. Built package
-  identity was `dirty=false` at the verified checkout. A local
-  `npm pack --dry-run --ignore-scripts --json` enumerated **5,516 files**,
-  ~**9.9 MB** package size. No npm publish/install occurred.
+  identity was `dirty=false` at the verified privacy-sanitized checkout.
+  After a fresh assembly from that tree, a local
+  `npm pack --dry-run --ignore-scripts --json` enumerated **5,201 files**,
+  ~**9.4 MB** package size. No npm publish/install occurred.
 - `npm test`: **exited 1**. The repository test gate passed **333**, with 1
   skipped. The daemon suite: **24,903 passed, 5 failed, 27 skipped, 5 todo**.
   CLI: **6,262 passed, 2 failed, 7 skipped**. TUI: **1,202 passed**.
