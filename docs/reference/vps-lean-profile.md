@@ -141,6 +141,12 @@ separately and keep them disabled when unnecessary on constrained hosts.
 
 ## Validation, limitations and rollback
 
+The independent follow-up, including the corrected baseline artifact comparison,
+three-repeat event-backlog measurements, full-suite environmental failures and
+unverified real-VPS gates, is recorded in
+[vps-stage2-validation.md](vps-stage2-validation.md). Prefer that controlled
+multi-run evidence to the illustrative one-off numbers above.
+
 ```sh
 npm run lint
 npx vitest run packages/daemon/test/event-bus.test.ts \
