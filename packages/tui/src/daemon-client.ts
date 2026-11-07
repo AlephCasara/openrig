@@ -254,7 +254,7 @@ export class DaemonClient {
 
   /** Finite coordination history, with strictly bounded passive GETs. No exporter, collector or refresh endpoint. */
   async finiteTelemetry(): Promise<import("./telemetry/telemetry-model.js").TelemetryRead> {
-    const { parseTelemetryPage } = await import("./telemetry/telemetry-model.js");
+    const { parseTelemetryPage, parseRuntimeSummary } = await import("./telemetry/telemetry-model.js");
     type Result = import("./telemetry/telemetry-model.js").TelemetryPageResult;
     const read = async (path: string, stream: "events" | "queue-transitions" | "tenures"): Promise<Result> => {
       let response: Response;
@@ -274,10 +274,17 @@ export class DaemonClient {
     // Tenure history has a required node ID; use a passive inventory lookup with a strict sample cap.
     // A missing inventory is recorded separately, never interpreted as absence of tenures.
     let tenures: Result = { status: "unavailable", reason: "node inventory unavailable" };
+    let runtime: import("./telemetry/telemetry-model.js").RuntimeRead = { status: "unavailable", reason: "rig inventory unavailable" };
     try {
       const inventory: unknown = await this.ps();
       const rigs = Array.isArray(inventory) ? inventory : [];
       const rig = rigs.find((entry): entry is { rigId: string } => !!entry && typeof entry === "object" && typeof (entry as { rigId?: unknown }).rigId === "string" && !!(entry as { rigId: string }).rigId);
+      if (rig) {
+        try {
+          const response = await this.fetchImpl(`${this.baseUrl}/api/telemetry/runtime/summary?rigId=${encodeURIComponent(rig.rigId)}`, { method: "GET", headers: this.headers, signal: AbortSignal.timeout(5_000) });
+          runtime = response.ok ? parseRuntimeSummary(await response.json().catch(() => null)) : { status: "unavailable", reason: `HTTP ${response.status}` };
+        } catch (error) { runtime = { status: "unavailable", reason: error instanceof Error ? error.message : "runtime read failed" }; }
+      }
       const nodeInventory: unknown = rig ? await this.rigNodes(rig.rigId) : [];
       const nodes = Array.isArray(nodeInventory) ? nodeInventory : [];
       const first = nodes.find((node): node is { nodeId: string } => !!node && typeof node === "object" && typeof (node as { nodeId?: unknown }).nodeId === "string" && (node as { nodeId: string }).nodeId.length > 0);
@@ -286,7 +293,7 @@ export class DaemonClient {
     } catch (error) {
       tenures = { status: "unavailable", reason: error instanceof Error ? error.message : "node inventory read failed" };
     }
-    return { events, transitions, tenures };
+    return { events, transitions, tenures, runtime };
   }
 
   /** A1 passive cgroup-v2 sample, strictly validated before it reaches the view. */

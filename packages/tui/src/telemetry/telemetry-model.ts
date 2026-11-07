@@ -13,10 +13,35 @@ export interface TelemetryRead {
   events: TelemetryPageResult;
   transitions: TelemetryPageResult;
   tenures: TelemetryPageResult;
+  runtime?: RuntimeRead;
 }
+
+export type RuntimeRead = { status: "unavailable"; reason: string } | {
+  status: "available";
+  coverage: { status: "available" | "partial" | "unavailable"; historyCompleteness: "unknown"; gaps: string[]; totalTokens: null; billingUsd: null };
+  sources: Record<"claude-otlp" | "codex-usage", { status: "available" | "partial" | "unavailable"; reason: string | null; records: number }>;
+  exporter: { status: "unavailable"; reason: string };
+};
 
 const obj = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string";
+
+export function parseRuntimeSummary(raw: unknown): RuntimeRead {
+  if (!obj(raw) || raw.schemaVersion !== 1 || !text(raw.rigId) || !obj(raw.coverage) || !obj(raw.sources) || !obj(raw.exporter) ||
+      !["available", "partial", "unavailable"].includes(String(raw.coverage.status)) ||
+      raw.coverage.historyCompleteness !== "unknown" || raw.coverage.totalTokens !== null || raw.coverage.billingUsd !== null ||
+      !Array.isArray(raw.coverage.gaps) || raw.coverage.gaps.length > 128 || !raw.coverage.gaps.every(text) ||
+      raw.exporter.status !== "unavailable" || !text(raw.exporter.reason) || !Array.isArray(raw.records) || raw.records.length > 128 ||
+      !["claude-otlp", "codex-usage"].every(source => {
+        const item = (raw.sources as Record<string, unknown>)[source];
+        return obj(item) && ["available", "partial", "unavailable"].includes(String(item.status)) &&
+          (item.status === "available" ? item.reason === null || text(item.reason) : text(item.reason) && item.reason.length > 0) &&
+          Number.isInteger(item.records) && Number(item.records) >= 0;
+      })) return { status: "unavailable", reason: "invalid runtime summary" };
+  return { status: "available", coverage: raw.coverage as Extract<RuntimeRead, { status: "available" }>["coverage"],
+    sources: raw.sources as Extract<RuntimeRead, { status: "available" }>["sources"],
+    exporter: raw.exporter as Extract<RuntimeRead, { status: "available" }>["exporter"] };
+}
 
 /** Malformed or incomplete envelopes are unavailable; never infer zero history from them. */
 export function parseTelemetryPage(raw: unknown, stream: Stream): TelemetryPageResult {
@@ -72,10 +97,19 @@ function streamLines(name: string, result: TelemetryPageResult): ContentLine[] {
 export function telemetryLines(read: TelemetryRead | undefined, width: number): ContentLine[] {
   const lines: ContentLine[] = [{ text: "System · Telemetry (passive, finite)" },
     { text: "Retained coordination records; bounded sample, no continuous stream or complete-history claim." },
-    { text: "Sources: Claude OTLP — availability unverified; Codex native usage — availability unverified." },
-    { text: "No exporter status or runtime token completeness is established by these records." },
     { text: "Usage: System → Usage · Cost: System → Cost (no queue-to-cost attribution)." }, { text: "" }];
   if (!read) return wrapDetailLines([...lines, { text: "Telemetry unavailable: no daemon read yet." }], width);
+  if (read.runtime?.status === "available") {
+    const runtime = read.runtime;
+    lines.push({ text: `Runtime coverage: ${runtime.coverage.status} · historical completeness unknown · tokens across sources unknown · billing USD unavailable` });
+    for (const [label, key] of [["Claude OTLP", "claude-otlp"], ["Codex native usage", "codex-usage"]] as const) {
+      const source = runtime.sources[key];
+      lines.push({ text: `  ${label}: ${source.status} · ${source.records} attributed records${source.reason ? ` · ${source.reason}` : ""}` });
+    }
+    lines.push({ text: `Exporter health: ${runtime.exporter.status} · ${runtime.exporter.reason}` });
+    for (const gap of runtime.coverage.gaps.slice(0, 8)) lines.push({ text: `  Runtime gap: ${gap}` });
+  } else lines.push({ text: `Runtime sources: unavailable · ${read.runtime?.reason ?? "no runtime projection read"}; exporter status unavailable` });
+  lines.push({ text: "" });
   lines.push(...streamLines("Events", read.events), { text: "" },
     ...streamLines("Queue transitions", read.transitions), { text: "" },
     ...streamLines("Seat tenures (sampled node)", read.tenures));
