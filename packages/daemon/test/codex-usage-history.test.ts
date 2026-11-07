@@ -52,6 +52,32 @@ describe("Codex A5 provenance and coverage", () => {
     expect(bad?.invalidFields).toEqual(expect.arrayContaining(["timestamp", "model", "tokens.input"]));
     expect(bad?.unavailableFields).toContain("tokens.cachedInput");
     expect(bad?.model).toBeNull();
+    const malformed = decodeCodexUsageRecord({ ...turn("broken", 1), token_usage: "bad" });
+    const absent = decodeCodexUsageRecord({ ...turn("missing", 1), token_usage: undefined });
+    expect(malformed?.invalidFields).toContain("token_usage");
+    expect(absent?.invalidFields).not.toContain("token_usage");
+  });
+
+  it("preserves distinct same-time native observations without IDs independent of input order", () => {
+    const first = native("2026-11-07T07:00:00Z", 100);
+    const second = native("2026-11-07T07:00:00Z", 120);
+    for (const batch of [[first, second, first], [second, first, first]]) {
+      const history = collectCodexUsageHistory(batch);
+      expect(history.records).toHaveLength(2);
+      expect(history.records.map(r => r.tokens.input)).toEqual([100, 120]);
+      expect(history.coverage.duplicateRecords).toBe(1);
+      expect(history.latestSnapshots[0].tokens.input).toBe(120);
+    }
+  });
+
+  it("detects reset in output or other cumulative counters even when input increases", () => {
+    const before = native("2026-11-07T07:00:00Z", 100);
+    const after = native("2026-11-07T07:01:00Z", 120);
+    after.payload.info.total_token_usage.output_tokens = 20;
+    before.payload.info.total_token_usage.output_tokens = 100;
+    const history = collectCodexUsageHistory([after, before]);
+    expect(history.coverage.resets).toBe(1);
+    expect(history.coverage.gaps).toContain("counter-reset:thread-a");
   });
 
   it("rejects quota-only native events and flags adapter records without turn identity", () => {
