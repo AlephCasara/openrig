@@ -29,8 +29,9 @@ export const SECTION_REGISTRY: readonly SectionDef[] = [
   { name: "usage", sourceRead: "GET /api/provider/status (memory-only read; never the refresh) + /api/config?view=browser only when usage is absent", drillShape: "provider>allowance>window; seats" },
   { name: "usage-hosts", sourceRead: "GET /api/provider/usage/hosts (memory-only reads here and on each registered host; never the refresh)", drillShape: "hosts; allowance>host>window; seats per host" },
   { name: "cost", sourceRead: "GET /api/telemetry/usage/cost (the daemon's stored usage samples; starts no lookup)", drillShape: "seats" },
+  { name: "telemetry", sourceRead: "GET /api/telemetry/v1/events + /queue-transitions + /nodes/:nodeId/tenures (bounded passive reads)", drillShape: "streams>coverage" },
   { name: "memory", sourceRead: "GET /api/ps/seat-resources (passive per-seat cgroup-v2 sample)", drillShape: "seat" },
 ];
 
 /** Display grouping only; compatible configuration/connection coordinates remain. */
-export const SYSTEM_SECTIONS = ["system", "config", "connections", "usage", "usage-hosts", "cost", "memory"];
+export const SYSTEM_SECTIONS = ["system", "config", "connections", "usage", "usage-hosts", "cost", "telemetry", "memory"];

@@ -252,6 +252,43 @@ export class DaemonClient {
     return { body: { seats: data["seats"] as import("./cost/cost-read.js").CostBody["seats"], note: typeof data["note"] === "string" ? data["note"] : "" } };
   }
 
+  /** Finite coordination history, with strictly bounded passive GETs. No exporter, collector or refresh endpoint. */
+  async finiteTelemetry(): Promise<import("./telemetry/telemetry-model.js").TelemetryRead> {
+    const { parseTelemetryPage } = await import("./telemetry/telemetry-model.js");
+    type Result = import("./telemetry/telemetry-model.js").TelemetryPageResult;
+    const read = async (path: string, stream: "events" | "queue-transitions" | "tenures"): Promise<Result> => {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(`${this.baseUrl}${path}`, { method: "GET", headers: this.headers, signal: AbortSignal.timeout(5_000) });
+        const body: unknown = await response.json().catch(() => null);
+        if (!response.ok) return { status: "unavailable", reason: `HTTP ${response.status}` };
+        return parseTelemetryPage(body, stream);
+      } catch (error) {
+        return { status: "unavailable", reason: error instanceof Error ? error.message : "read failed" };
+      }
+    };
+    const [events, transitions] = await Promise.all([
+      read("/api/telemetry/v1/events?start=retained&limit=16", "events"),
+      read("/api/telemetry/v1/queue-transitions?start=retained&limit=16", "queue-transitions"),
+    ]);
+    // Tenure history has a required node ID; use a passive inventory lookup with a strict sample cap.
+    // A missing inventory is recorded separately, never interpreted as absence of tenures.
+    let tenures: Result = { status: "unavailable", reason: "node inventory unavailable" };
+    try {
+      const inventory: unknown = await this.ps();
+      const rigs = Array.isArray(inventory) ? inventory : [];
+      const rig = rigs.find((entry): entry is { rigId: string } => !!entry && typeof entry === "object" && typeof (entry as { rigId?: unknown }).rigId === "string" && !!(entry as { rigId: string }).rigId);
+      const nodeInventory: unknown = rig ? await this.rigNodes(rig.rigId) : [];
+      const nodes = Array.isArray(nodeInventory) ? nodeInventory : [];
+      const first = nodes.find((node): node is { nodeId: string } => !!node && typeof node === "object" && typeof (node as { nodeId?: unknown }).nodeId === "string" && (node as { nodeId: string }).nodeId.length > 0);
+      tenures = first ? await read(`/api/telemetry/v1/nodes/${encodeURIComponent(first.nodeId)}/tenures?limit=16`, "tenures")
+        : { status: "unavailable", reason: "no addressable node in inventory (tenure history unverified)" };
+    } catch (error) {
+      tenures = { status: "unavailable", reason: error instanceof Error ? error.message : "node inventory read failed" };
+    }
+    return { events, transitions, tenures };
+  }
+
   /** A1 passive cgroup-v2 sample, strictly validated before it reaches the view. */
   async seatMemory(): Promise<import("./memory/memory-model.js").MemoryRead["status"]> {
     let res: Response;

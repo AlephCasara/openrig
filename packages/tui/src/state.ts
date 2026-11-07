@@ -634,7 +634,7 @@ export function computeExplorerRows(state: ViewState, snap: FleetSnapshot): Expl
   const rows: ExplorerRow[] = [];
   for (const section of state.sections) {
     const active = section.name === state.section || section.name === "system" && SYSTEM_SECTIONS.includes(state.section);
-    if (section.name === "config" || section.name === "connections" || section.name === "usage" || section.name === "usage-hosts" || section.name === "cost" || section.name === "memory") continue;
+    if (section.name === "config" || section.name === "connections" || section.name === "usage" || section.name === "usage-hosts" || section.name === "cost" || section.name === "telemetry" || section.name === "memory") continue;
     const label =
       section.name === "topology"
         ? "TOPOLOGY"
@@ -659,6 +659,7 @@ export function computeExplorerRows(state: ViewState, snap: FleetSnapshot): Expl
         { label: "  Usage", key: "section:usage", action: { type: "jump", section: "usage" } },
         { label: "  Usage · all hosts", key: "section:usage-hosts", action: { type: "jump", section: "usage-hosts" } },
         { label: "  Cost", key: "section:cost", action: { type: "jump", section: "cost" } },
+        { label: "  Telemetry", key: "section:telemetry", action: { type: "jump", section: "telemetry" } },
         { label: "  Memory", key: "section:memory", action: { type: "jump", section: "memory" } });
       if (state.section === "memory" && snap.memory?.status && "body" in snap.memory.status)
         rows.push(...[...snap.memory.status.body.seats]

@@ -425,6 +425,7 @@ export interface FleetSnapshot {
   usageHosts?: import("./usage/usage-hosts-model.js").UsageHostsRead;
   /** Slice 02 — System → Cost: the served cost view (`rig usage cost`). Absent until read. */
   cost?: import("./cost/cost-read.js").CostRead;
+  telemetry?: import("./telemetry/telemetry-model.js").TelemetryRead;
   memory?: import("./memory/memory-model.js").MemoryRead;
   /** Canonical daemon health records. Absent on old/demo snapshots. */
   health?: HealthSnapshot;

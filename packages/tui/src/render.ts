@@ -9,6 +9,7 @@ import { connectionsLines } from "./connections/connections-model.js";
 import { usageLines } from "./usage/usage-model.js";
 import { usageHostsLines } from "./usage/usage-hosts-model.js";
 import { costLines } from "./cost/cost-model.js";
+import { telemetryLines } from "./telemetry/telemetry-model.js";
 import { memoryLines } from "./memory/memory-model.js";
 // Hand-rolled ANSI renderer (Phase-0 substrate decision). Pure function:
 // (state, snapshot) → {lines, hitMap, explorerRows}. BOTH panes emit hit
@@ -876,6 +877,7 @@ function contentLines(state: ViewState, snap: FleetSnapshot, contentWidth: numbe
   if (state.section === "usage") return usageLines(snap, contentWidth);
   if (state.section === "usage-hosts") return usageHostsLines(snap, contentWidth);
   if (state.section === "cost") return costLines(snap.cost, contentWidth);
+  if (state.section === "telemetry") return telemetryLines(snap.telemetry, contentWidth);
   if (state.section === "memory") return memoryLines(snap.memory, contentWidth, state.memorySelected ?? null);
   if (state.healthOpen) return healthDetailLines(snap, state.healthOpen, contentWidth, state.timeZone);
   if (state.section === "system") return [{ text: "System · Instance health" }, { text: "" }, ...healthListLines(snap, { kind: "instance", local: true }, contentWidth)];

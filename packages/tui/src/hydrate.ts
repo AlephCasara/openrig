@@ -464,6 +464,11 @@ export async function hydrateSnapshot(
     return { ...emptySnapshot(), cost: { status }, readErrors, hydratedAt: new Date().toISOString() };
   }
 
+  if (viewContext?.section === "telemetry") {
+    const telemetry = await client.finiteTelemetry();
+    return { ...emptySnapshot(), telemetry, hydratedAt: new Date().toISOString() };
+  }
+
   if (viewContext?.section === "memory") {
     const status = await client.seatMemory();
     if (!("body" in status)) readErrors.push(`memory: ${status.error}`);
