@@ -91,6 +91,8 @@ export function decodeCodexUsageRecord(raw: unknown, verifiedSeatBySession: Read
   // must never replace totals or be summed across snapshots. Rate-limit-only events are skipped.
   const tokensRaw = native ? obj(info?.total_token_usage) : obj(body.token_usage);
   if (native && !tokensRaw && !obj(info?.last_token_usage)) return null;
+  if (adapter && "token_usage" in body && body.token_usage !== undefined && !tokensRaw) invalidFields.push("token_usage");
+  if (native && info && "total_token_usage" in info && info.total_token_usage !== undefined && !tokensRaw) invalidFields.push("total_token_usage");
   const tokens = tokenFields(tokensRaw, invalidFields);
   const contextRaw = info?.model_context_window;
   const contextWindow = count(contextRaw);
@@ -111,7 +113,7 @@ export function decodeCodexUsageRecord(raw: unknown, verifiedSeatBySession: Read
     : nativeSessionId && sourceRecordId
       ? `${producer}:${nativeSessionId}:id:${sourceRecordId}`
       : nativeSessionId && native && observedAt
-        ? `${producer}:${nativeSessionId}:timestamp:${observedAt}` : null;
+        ? `${producer}:${nativeSessionId}:timestamp:${observedAt}:snapshot:${JSON.stringify([tokens.input, tokens.output, tokens.cachedInput, tokens.reasoningOutput, contextWindow, model])}` : null;
   const seatSession = nativeSessionId ? verifiedSeatBySession.get(nativeSessionId) ?? null : null;
   return {
     schemaVersion: 1, runtime: "codex", producer, source, sourceRecordId, dedupeKey,
@@ -136,7 +138,11 @@ export function collectCodexUsageHistory(rawRecords: readonly unknown[], verifie
     if (record.dedupeKey) seen.add(record.dedupeKey);
     records.push(record);
   }
-  records.sort((a, b) => (a.observedAt ?? "").localeCompare(b.observedAt ?? ""));
+  records.sort((a, b) => (a.observedAt ?? "").localeCompare(b.observedAt ?? "")
+    || (a.measurement === "cumulative-snapshot" && b.measurement === "cumulative-snapshot"
+      ? (a.tokens.input ?? -1) - (b.tokens.input ?? -1)
+        || (a.tokens.output ?? -1) - (b.tokens.output ?? -1)
+        || (a.dedupeKey ?? "").localeCompare(b.dedupeKey ?? "") : 0));
   const turns = records.filter(r => r.measurement === "turn" && r.nativeSessionId && r.turnId && !r.invalidFields.includes("turnId-required-for-turn-record"));
   const snapshots = records.filter(r => r.measurement === "cumulative-snapshot");
   const latest = new Map<string, CodexUsageHistoryRecord>();
@@ -145,9 +151,13 @@ export function collectCodexUsageHistory(rawRecords: readonly unknown[], verifie
   for (const snap of snapshots) {
     const key = snap.nativeSessionId ?? "unknown-session";
     const prior = latest.get(key);
-    if (prior && snap.tokens.input !== null && prior.tokens.input !== null && snap.tokens.input < prior.tokens.input) {
+    if (prior && (["input", "output", "cachedInput", "reasoningOutput"] as const).some(field =>
+      snap.tokens[field] !== null && prior.tokens[field] !== null && snap.tokens[field]! < prior.tokens[field]!)) {
       resets++;
       gaps.add(`counter-reset:${key}`);
+    }
+    if (prior?.observedAt && prior.observedAt === snap.observedAt && prior.dedupeKey !== snap.dedupeKey) {
+      gaps.add(`same-timestamp-snapshots:${key}`);
     }
     if (!snap.observedAt || !snap.nativeSessionId) gaps.add("snapshot-missing-provenance");
     latest.set(key, snap);
