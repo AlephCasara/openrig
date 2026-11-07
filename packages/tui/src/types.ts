@@ -425,6 +425,7 @@ export interface FleetSnapshot {
   usageHosts?: import("./usage/usage-hosts-model.js").UsageHostsRead;
   /** Slice 02 — System → Cost: the served cost view (`rig usage cost`). Absent until read. */
   cost?: import("./cost/cost-read.js").CostRead;
+  memory?: import("./memory/memory-model.js").MemoryRead;
   /** Canonical daemon health records. Absent on old/demo snapshots. */
   health?: HealthSnapshot;
   /** SCOPES view (d64d2f5c): store-direct mission/slice projections; absent on old daemons (honest-empty). */
@@ -535,6 +536,7 @@ export type Action =
   | { type: "back" }
   | { type: "config-category"; category: string }
   | { type: "config-setting"; key: string }
+  | { type: "memory-select"; key: string }
   | { type: "noop" }
   | { type: "error"; message: string }
   | { type: "jump"; section: string }
@@ -612,6 +614,7 @@ export interface ViewState {
   history?: NavigationFrame[];
   configCategory?: string | null;
   configKey?: string | null;
+  memorySelected?: string | null;
   pendingDrill?: PendingDrill | null;
   /** Last PendingDrill seq handed out; never reused while this view lives. */
   pendingSeq?: number;
@@ -655,7 +658,7 @@ export interface ViewState {
   lastError: string | null;
 }
 
-export type NavigationFrame = Pick<ViewState, "attentionCategory" | "attentionOpen" | "project" | "terminalView" | "terminalPage" | "file" | "externalUrl" | "section" | "drill" | "filter" | "selection" | "runningOf" | "viewTab" | "contentOffset" | "contentMaxOffset" | "contentTargetCount" | "contentSelection" | "focusedPane" | "scopesMission" | "scopesSelected" | "scopesCollapseReqs" | "scopesNarrative" | "executionOpen" | "expanded" | "timeZoneHelp" | "recentOpen" | "configCategory" | "configKey">;
+export type NavigationFrame = Pick<ViewState, "attentionCategory" | "attentionOpen" | "project" | "terminalView" | "terminalPage" | "file" | "externalUrl" | "section" | "memorySelected" | "drill" | "filter" | "selection" | "runningOf" | "viewTab" | "contentOffset" | "contentMaxOffset" | "contentTargetCount" | "contentSelection" | "focusedPane" | "scopesMission" | "scopesSelected" | "scopesCollapseReqs" | "scopesNarrative" | "executionOpen" | "expanded" | "timeZoneHelp" | "recentOpen" | "configCategory" | "configKey">;
 
 export interface ViewStateStore {
   instanceId: string;

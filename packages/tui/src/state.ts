@@ -56,6 +56,7 @@ export function createViewState(options: CreateViewStateOptions): ViewStateStore
     timeZoneWarning: options.timeZoneWarning ?? resolveTimeZone(options.timeZone ?? DEFAULT_TIME_ZONE).warning,
     timeZoneHelp: false,
     recentOpen: null,
+    memorySelected: null,
     sections,
     section: sections[0]?.name ?? "topology",
     drill: [],
@@ -188,6 +189,11 @@ function reduce(state: ViewState, action: Action, snap: FleetSnapshot): ViewStat
     }
     case "config-setting":
       return resetContent({ ...next, section: "config", drill: [], viewTab: "table", configKey: action.key, healthOpen: null });
+    case "memory-select":
+      if (state.section !== "memory" || !(snap.memory?.status && "body" in snap.memory.status)
+        || !snap.memory.status.body.seats.some((seat) => `${seat.rigId}/${seat.sessionName}` === action.key))
+        return { ...next, lastError: "Memory seat is outside the current sample" };
+      return resetContent({ ...next, memorySelected: state.memorySelected === action.key ? null : action.key });
     case "jump": {
       next.specLaunch = null;
       next.terminalView = null;
@@ -201,6 +207,7 @@ function reduce(state: ViewState, action: Action, snap: FleetSnapshot): ViewStat
       next.healthOpen = null;
       next.configCategory = null;
       next.configKey = null;
+      if (action.section !== "memory") next.memorySelected = null;
       if (!state.sections.some((s) => s.name === action.section))
         return { ...next, lastError: `unknown section "${action.section}"` };
       return syncSelection(
@@ -363,12 +370,12 @@ function reduce(state: ViewState, action: Action, snap: FleetSnapshot): ViewStat
 }
 
 function location(s: ViewState): string {
-  return JSON.stringify([s.attentionCategory, s.attentionOpen, s.project, s.terminalView, s.section, s.drill, s.runningOf, s.scopesMission, s.scopesSelected, s.executionOpen, s.recentOpen?.transitionId, s.timeZoneHelp, s.configCategory, s.configKey, s.file, s.externalUrl]);
+  return JSON.stringify([s.attentionCategory, s.attentionOpen, s.project, s.terminalView, s.section, s.memorySelected, s.drill, s.runningOf, s.scopesMission, s.scopesSelected, s.executionOpen, s.recentOpen?.transitionId, s.timeZoneHelp, s.configCategory, s.configKey, s.file, s.externalUrl]);
 }
 
 function navigationFrame(s: ViewState): NavigationFrame {
-  const { attentionCategory, attentionOpen, project, terminalView, terminalPage, file, externalUrl, section, drill, filter, selection, runningOf, viewTab, contentOffset, contentMaxOffset, contentTargetCount, contentSelection, focusedPane, scopesMission, scopesSelected, scopesCollapseReqs, scopesNarrative, executionOpen, expanded, recentOpen, timeZoneHelp, configCategory, configKey } = s;
-  return { attentionCategory, attentionOpen, project, terminalView, terminalPage, file, externalUrl, section, drill, filter, selection, runningOf, viewTab, contentOffset, contentMaxOffset, contentTargetCount, contentSelection, focusedPane, scopesMission, scopesSelected, scopesCollapseReqs, scopesNarrative, executionOpen, expanded, recentOpen, timeZoneHelp, configCategory, configKey };
+  const { attentionCategory, attentionOpen, project, terminalView, terminalPage, file, externalUrl, section, memorySelected, drill, filter, selection, runningOf, viewTab, contentOffset, contentMaxOffset, contentTargetCount, contentSelection, focusedPane, scopesMission, scopesSelected, scopesCollapseReqs, scopesNarrative, executionOpen, expanded, recentOpen, timeZoneHelp, configCategory, configKey } = s;
+  return { attentionCategory, attentionOpen, project, terminalView, terminalPage, file, externalUrl, section, memorySelected, drill, filter, selection, runningOf, viewTab, contentOffset, contentMaxOffset, contentTargetCount, contentSelection, focusedPane, scopesMission, scopesSelected, scopesCollapseReqs, scopesNarrative, executionOpen, expanded, recentOpen, timeZoneHelp, configCategory, configKey };
 }
 
 function applyDrill(state: ViewState, next: ViewState, action: Extract<Action, { type: "drill" }>, snap: FleetSnapshot): ViewState {
@@ -627,7 +634,7 @@ export function computeExplorerRows(state: ViewState, snap: FleetSnapshot): Expl
   const rows: ExplorerRow[] = [];
   for (const section of state.sections) {
     const active = section.name === state.section || section.name === "system" && SYSTEM_SECTIONS.includes(state.section);
-    if (section.name === "config" || section.name === "connections" || section.name === "usage" || section.name === "usage-hosts" || section.name === "cost") continue;
+    if (section.name === "config" || section.name === "connections" || section.name === "usage" || section.name === "usage-hosts" || section.name === "cost" || section.name === "memory") continue;
     const label =
       section.name === "topology"
         ? "TOPOLOGY"
@@ -651,7 +658,12 @@ export function computeExplorerRows(state: ViewState, snap: FleetSnapshot): Expl
       rows.push({ label: "  Connections", key: "section:connections", action: { type: "jump", section: "connections" } },
         { label: "  Usage", key: "section:usage", action: { type: "jump", section: "usage" } },
         { label: "  Usage · all hosts", key: "section:usage-hosts", action: { type: "jump", section: "usage-hosts" } },
-        { label: "  Cost", key: "section:cost", action: { type: "jump", section: "cost" } });
+        { label: "  Cost", key: "section:cost", action: { type: "jump", section: "cost" } },
+        { label: "  Memory", key: "section:memory", action: { type: "jump", section: "memory" } });
+      if (state.section === "memory" && snap.memory?.status && "body" in snap.memory.status)
+        rows.push(...[...snap.memory.status.body.seats]
+          .sort((a, b) => `${a.rigId}/${a.sessionName}`.localeCompare(`${b.rigId}/${b.sessionName}`))
+          .map((seat) => ({ label: `    ${state.memorySelected === `${seat.rigId}/${seat.sessionName}` ? "▸" : "›"} ${seat.sessionName}`, key: `memory:${seat.rigId}/${seat.sessionName}`, action: { type: "memory-select" as const, key: `${seat.rigId}/${seat.sessionName}` } })));
       if (state.history?.length) rows.push({ label: "  Back", key: "system:back", action: { type: "back" } });
       continue;
     }
