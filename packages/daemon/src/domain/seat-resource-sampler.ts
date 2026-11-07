@@ -94,9 +94,11 @@ export async function sampleSeatResources(deps: SeatResourceSamplerDependencies)
     return result;
   }
 
-  // Read at most one verified native PID + its pane and three metric files per seat.
-  // Serial sampling avoids unbounded parallel tmux/process probes on large rigs.
-  const attributed = new Map<string, number>();
+  // Attribute all verified seat scopes before reading metrics. A failed metrics
+  // read must never hide another seat sharing the same cgroup.
+  // Serial probing avoids unbounded parallel tmux/process reads on large rigs.
+  const scopes: Array<{ path: string; pane: string; panePid: number } | null> = Array(rows.length).fill(null);
+  const scopeCounts = new Map<string, number>();
   for (let index = 0; index < rows.length; index++) {
     const seat = selectedSeats[index]!;
     const row = rows[index]!;
@@ -146,6 +148,20 @@ export async function sampleSeatResources(deps: SeatResourceSamplerDependencies)
       rows[index] = failed(row, "invalid_cgroup_path");
       continue;
     }
+    scopes[index] = { path, pane, panePid: panePid! };
+    scopeCounts.set(path, (scopeCounts.get(path) ?? 0) + 1);
+  }
+
+  // Only uniquely attributed scopes can expose per-seat resource measurements.
+  for (let index = 0; index < rows.length; index++) {
+    const scope = scopes[index];
+    if (!scope) continue;
+    const { path, pane, panePid } = scope;
+    const row = rows[index]!;
+    if (scopeCounts.get(path)! > 1) {
+      rows[index] = failed(row, "scope_shared_by_seats");
+      continue;
+    }
     try {
       const [current, max] = await Promise.all([
         readText(posix.join(path, "memory.current")),
@@ -171,13 +187,6 @@ export async function sampleSeatResources(deps: SeatResourceSamplerDependencies)
         rows[index] = failed(row, "pane_identity_changed");
         continue;
       }
-      const previous = attributed.get(path);
-      if (previous !== undefined) {
-        rows[previous] = failed(rows[previous]!, "scope_shared_by_seats");
-        rows[index] = failed(row, "scope_shared_by_seats");
-        continue;
-      }
-      attributed.set(path, index);
       rows[index] = { ...row, availability: "available", reason: null,
         observed: { bytesCurrent, bytesLimit, ...(swapBytesCurrent === undefined ? {} : { swapBytesCurrent }), source: "cgroup-v2" } };
     } catch {
