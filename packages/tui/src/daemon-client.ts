@@ -294,8 +294,11 @@ export class DaemonClient {
       }
       const nodeInventory: unknown = rig ? await this.rigNodes(rig.rigId) : [];
       const nodes = Array.isArray(nodeInventory) ? nodeInventory : [];
-      const first = nodes.find((node): node is { nodeId: string } => !!node && typeof node === "object" && typeof (node as { nodeId?: unknown }).nodeId === "string" && (node as { nodeId: string }).nodeId.length > 0);
-      tenures = first ? await read(`/api/telemetry/v1/nodes/${encodeURIComponent(first.nodeId)}/tenures?limit=16`, "tenures")
+      const nodeIds = [...new Set(nodes.flatMap(node =>
+        node && typeof node === "object" && typeof (node as { nodeId?: unknown }).nodeId === "string" && (node as { nodeId: string }).nodeId.length > 0
+          ? [(node as { nodeId: string }).nodeId] : []))];
+      tenures = nodeIds.length > 1 ? { status: "unavailable", reason: "multiple nodes in rig inventory; tenure node target ambiguous" }
+        : nodeIds.length === 1 ? await read(`/api/telemetry/v1/nodes/${encodeURIComponent(nodeIds[0]!)}/tenures?limit=16`, "tenures")
         : { status: "unavailable", reason: "no addressable node in inventory (tenure history unverified)" };
     } catch (error) {
       tenures = { status: "unavailable", reason: error instanceof Error ? error.message : "node inventory read failed" };

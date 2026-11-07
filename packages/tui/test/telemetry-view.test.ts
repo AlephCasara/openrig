@@ -87,4 +87,30 @@ describe("System → Telemetry passive read", () => {
       "/api/ps",
     ]);
   });
+
+  it("leaves tenures unavailable for multiple nodes of one rig without choosing the first", async () => {
+    const calls: string[] = [];
+    const client = new DaemonClient({ baseUrl: "http://fixture", fetchImpl: (async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (url.pathname === "/api/ps") return Response.json([{ rigId: "rig-1" }]);
+      if (url.pathname === "/api/rigs/rig-1/nodes") return Response.json([{ nodeId: "node-a" }, { nodeId: "node-b" }]);
+      if (url.pathname === "/api/telemetry/runtime/summary") return Response.json({ schemaVersion: 1, rigId: "rig-1", records: [], coverage: { status: "available", historyCompleteness: "unknown", gaps: [], totalTokens: null, billingUsd: null }, sources: { "claude-otlp": { status: "available", reason: null, records: 0 }, "codex-usage": { status: "available", reason: null, records: 0 } }, exporter: { status: "unavailable", reason: "no-external-health-contract" } });
+      if (url.pathname === "/api/telemetry/v1/events") return Response.json(page("events", [{ seq: "1", type: "boot", createdAt: null }]));
+      if (url.pathname === "/api/telemetry/v1/queue-transitions") return Response.json(page("queue-transitions", [{ transitionId: "2", state: "pending", createdAt: null }]));
+      throw new Error(`unexpected tenure or targeted request ${url.pathname}`);
+    }) as typeof fetch });
+    const data = await client.finiteTelemetry();
+    expect(data.events).toMatchObject({ status: "available", rows: [{ type: "boot" }] });
+    expect(data.transitions).toMatchObject({ status: "available", rows: [{ state: "pending" }] });
+    expect(data.runtime).toMatchObject({ status: "available" });
+    expect(data.tenures).toMatchObject({ status: "unavailable", reason: expect.stringMatching(/multiple nodes|ambiguous/i) });
+    expect(calls).toEqual([
+      "/api/telemetry/v1/events?start=retained&limit=16",
+      "/api/telemetry/v1/queue-transitions?start=retained&limit=16",
+      "/api/ps",
+      "/api/telemetry/runtime/summary?rigId=rig-1",
+      "/api/rigs/rig-1/nodes",
+    ]);
+  });
 });
