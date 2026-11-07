@@ -8,17 +8,28 @@ import { queryUsageSeries, computeTopBurn, computeCostView } from "../domain/usa
 import { readTelemetryPage, TelemetryInputError, type TelemetrySource, type TelemetryStream } from "../domain/finite-telemetry.js";
 import { timeBoundAdvisory } from "../domain/time-bound-advisory.js";
 import { SQL_LIMIT_BOUND } from "./query-limit.js";
+import { runtimeTelemetrySummary, type RuntimeTelemetryInputs } from "../domain/runtime-telemetry-summary.js";
 
 export interface TelemetryRouteDeps {
   db: () => Database;
   /** injectable clock so tests and VM seeds are deterministic */
   nowIso?: () => string;
   source?: TelemetrySource;
+  /** Optional verified, bounded runtime evidence provider. Absence is explicitly unavailable. */
+  runtimeInputs?: (rigId: string) => RuntimeTelemetryInputs | null;
 }
 
 export function telemetryRoutes(deps: TelemetryRouteDeps): Hono {
   const app = new Hono();
   const now = deps.nowIso ?? (() => new Date().toISOString());
+
+  app.get("/runtime/summary", (c) => {
+    const rigId = c.req.query("rigId");
+    if (!rigId || rigId.length > 160 || !/^[a-zA-Z0-9][a-zA-Z0-9_.:/@-]*$/.test(rigId) || c.req.queries("rigId")?.length !== 1)
+      return c.json({ code: "runtime_summary_invalid_rig", error: "A single valid rigId is required." }, 400);
+    try { return c.json(runtimeTelemetrySummary(rigId, deps.runtimeInputs?.(rigId) ?? null, now())); }
+    catch { return c.json({ code: "runtime_summary_unavailable", error: "Runtime evidence could not be read." }, 503); }
+  });
 
   for (const [path, stream] of [["/v1/events", "events"], ["/v1/queue-transitions", "queue-transitions"], ["/v1/nodes/:nodeId/tenures", "tenures"]] as const) {
     app.get(path, (c) => {

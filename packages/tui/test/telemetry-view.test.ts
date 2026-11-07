@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DaemonClient } from "../src/daemon-client.js";
-import { parseTelemetryPage, telemetryLines } from "../src/telemetry/telemetry-model.js";
+import { parseRuntimeSummary, parseTelemetryPage, telemetryLines } from "../src/telemetry/telemetry-model.js";
 import { createViewState, computeExplorerRows, emptySnapshot } from "../src/state.js";
 import { hydrateSnapshot } from "../src/hydrate.js";
 import { renderScreen } from "../src/render.js";
@@ -18,6 +18,7 @@ describe("System → Telemetry passive read", () => {
     const calls: string[] = [];
     const client = new DaemonClient({ baseUrl: "http://fixture", fetchImpl: (async (input, init) => {
       const url = new URL(String(input)); calls.push(`${init?.method ?? "GET"} ${url.pathname}${url.search}`);
+      if (url.pathname === "/api/telemetry/runtime/summary") return Response.json({ schemaVersion: 1, rigId: "rig/1", records: [], coverage: { status: "partial", historyCompleteness: "unknown", gaps: ["counter-reset:s1"], totalTokens: null, billingUsd: null }, sources: { "claude-otlp": { status: "available", reason: null, records: 2 }, "codex-usage": { status: "partial", reason: "coverage-gaps", records: 3 } }, exporter: { status: "unavailable", reason: "no-external-health-contract" } });
       if (url.pathname === "/api/ps") return Response.json([{ rigId: "rig/1" }]);
       if (url.pathname === "/api/rigs/rig%2F1/nodes") return Response.json([{ nodeId: "node/1" }]);
       if (url.pathname.includes("/events")) return Response.json(page("events", [{ seq: "1", type: "boot", createdAt: "2026-11-07T05:00:00Z" }], [{ code: "before_retained_floor" }]));
@@ -37,10 +38,13 @@ describe("System → Telemetry passive read", () => {
     expect(rendered).toContain("tenure_floor_history_unavailable");
     expect(rendered).toContain("Claude OTLP");
     expect(rendered).toContain("Codex native usage");
+    expect(rendered).toContain("counter-reset:s1");
+    expect(rendered).toContain("billing USD");
+    expect(rendered).toContain("Exporter health: unavailable");
     expect(calls).toEqual([
       "GET /api/telemetry/v1/events?start=retained&limit=16",
       "GET /api/telemetry/v1/queue-transitions?start=retained&limit=16",
-      "GET /api/ps", "GET /api/rigs/rig%2F1/nodes", "GET /api/telemetry/v1/nodes/node%2F1/tenures?limit=16",
+      "GET /api/ps", "GET /api/telemetry/runtime/summary?rigId=rig%2F1", "GET /api/rigs/rig%2F1/nodes", "GET /api/telemetry/v1/nodes/node%2F1/tenures?limit=16",
     ]);
     expect(SYSTEM_SECTIONS).toContain("telemetry");
     expect(SECTION_REGISTRY.find(s => s.name === "telemetry")).toBeDefined();
@@ -49,6 +53,7 @@ describe("System → Telemetry passive read", () => {
 
   it("fails closed for malformed responses, unavailable routes and an empty addressable inventory", async () => {
     expect(parseTelemetryPage({ rows: [] }, "events")).toEqual({ status: "unavailable", reason: "invalid finite telemetry response" });
+    expect(parseRuntimeSummary({ schemaVersion: 1, rigId: "r", records: [], coverage: { status: "partial", historyCompleteness: "unknown", gaps: [], totalTokens: null, billingUsd: null }, sources: { "claude-otlp": { status: "partial", reason: null, records: 0 }, "codex-usage": { status: "unavailable", reason: "not-configured", records: 0 } }, exporter: { status: "unavailable", reason: "no-external-health-contract" } })).toEqual({ status: "unavailable", reason: "invalid runtime summary" });
     const client = new DaemonClient({ baseUrl: "http://fixture", fetchImpl: (async (input) => {
       if (String(input).endsWith("/api/ps")) return Response.json([]);
       return Response.json({ error: "unavailable" }, { status: 503 });
