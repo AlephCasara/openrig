@@ -1,5 +1,23 @@
 # Host load and transcript capture
 
+## Per-seat memory (Linux cgroup v2)
+
+`GET /api/ps/seat-resources` returns a request-time, read-only sample:
+`{ schemaVersion: 1, sampledAt, host, seats: [{ sessionName, rigId, state,
+observed, availability, reason }] }`. Available `observed` contains
+`{ bytesCurrent, bytesLimit, swapBytesCurrent?, source: "cgroup-v2" }`.
+`bytesLimit: null` means the kernel reports `memory.max=max` (unlimited),
+and an absent swap field means no reliable swap measurement. Neither is zero.
+
+Only daemon-known running tmux seats with a verified current registered pane,
+native executor PID and identical pane/native cgroup are eligible. Dedicated
+`rig-seats.slice/seat-*.scope` and `user@UID.service/tmux-spawn-UUID.scope`
+units are supported. A scope shared by two seats is rejected for both.
+Unsupported platforms/cgroup versions, missing scopes and invalid metrics
+produce `observed: null` with explicit `availability` and `reason`; no process
+RSS estimate is substituted. Samples are not historical and do not enforce
+limits. `/api/ps` and `/api/ps/resources` retain their existing contracts.
+
 Use `rig ps --resources` to inspect the serving host, or add `--host <id>`
 for one registered HTTP/SSH host. `--json` returns the same measurements for
 operators and monitoring tools. This view is host-scoped; rig/node filters and
