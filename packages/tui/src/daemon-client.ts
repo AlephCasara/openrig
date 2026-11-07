@@ -278,7 +278,14 @@ export class DaemonClient {
     try {
       const inventory: unknown = await this.ps();
       const rigs = Array.isArray(inventory) ? inventory : [];
-      const rig = rigs.find((entry): entry is { rigId: string } => !!entry && typeof entry === "object" && typeof (entry as { rigId?: unknown }).rigId === "string" && !!(entry as { rigId: string }).rigId);
+      const addressable = [...new Set(rigs.flatMap(entry =>
+        entry && typeof entry === "object" && typeof (entry as { rigId?: unknown }).rigId === "string" && (entry as { rigId: string }).rigId
+          ? [(entry as { rigId: string }).rigId] : []))];
+      if (addressable.length > 1) {
+        const reason = "multiple rigs in inventory; target ambiguous (select a rig before reading runtime or tenures)";
+        return { events, transitions, tenures: { status: "unavailable", reason }, runtime: { status: "unavailable", reason } };
+      }
+      const rig = addressable.length === 1 ? { rigId: addressable[0]! } : null;
       if (rig) {
         try {
           const response = await this.fetchImpl(`${this.baseUrl}/api/telemetry/runtime/summary?rigId=${encodeURIComponent(rig.rigId)}`, { method: "GET", headers: this.headers, signal: AbortSignal.timeout(5_000) });

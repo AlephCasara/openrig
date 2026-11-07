@@ -61,6 +61,30 @@ describe("System → Telemetry passive read", () => {
     const data = await client.finiteTelemetry();
     expect(data.events).toEqual({ status: "unavailable", reason: "HTTP 503" });
     expect(data.tenures).toMatchObject({ status: "unavailable" });
+    expect(data.runtime).toMatchObject({ status: "unavailable", reason: "rig inventory unavailable" });
     expect(telemetryLines(data, 120).map(l => l.text).join("\n")).toContain("history unknown");
+  });
+
+  it("fails closed for multiple addressable rigs while retaining passive telemetry reads", async () => {
+    const calls: string[] = [];
+    const client = new DaemonClient({ baseUrl: "http://fixture", fetchImpl: (async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (url.pathname === "/api/ps") return Response.json([{ rigId: "rig-a" }, { rigId: "rig-b" }]);
+      if (url.pathname === "/api/telemetry/v1/events") return Response.json(page("events", [{ seq: "1", type: "boot", createdAt: null }]));
+      if (url.pathname === "/api/telemetry/v1/queue-transitions") return Response.json(page("queue-transitions", [{ transitionId: "2", state: "pending", createdAt: null }]));
+      throw new Error(`unexpected targeted request ${url.pathname}`);
+    }) as typeof fetch });
+    const data = await client.finiteTelemetry();
+    expect(data.events).toMatchObject({ status: "available", rows: [{ type: "boot" }] });
+    expect(data.transitions).toMatchObject({ status: "available", rows: [{ state: "pending" }] });
+    expect(data.runtime).toMatchObject({ status: "unavailable", reason: expect.stringMatching(/multiple rigs|ambiguous/i) });
+    expect(data.tenures).toMatchObject({ status: "unavailable", reason: expect.stringMatching(/multiple rigs|ambiguous/i) });
+    expect(telemetryLines(data, 120).map(l => l.text).join("\n")).toMatch(/multiple rigs|ambiguous/i);
+    expect(calls).toEqual([
+      "/api/telemetry/v1/events?start=retained&limit=16",
+      "/api/telemetry/v1/queue-transitions?start=retained&limit=16",
+      "/api/ps",
+    ]);
   });
 });
