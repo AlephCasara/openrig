@@ -187,7 +187,7 @@ describe("System → Cost through the TUI", () => {
     const t = tui();
     t.click((a) => a.type === "jump" && a.section === "system");
     const system = computeExplorerRows(t.view.get(), t.snap()).map((r) => r.label).filter((l) => /^ {2}\S/.test(l));
-    expect(system).toEqual(["  Health", "  Configuration", "  Connections", "  Usage", "  Usage · all hosts", "  Cost", "  Memory", "  Back"]);
+    expect(system).toEqual(["  Health", "  Configuration", "  Connections", "  Usage", "  Usage · all hosts", "  Cost", "  Telemetry", "  Memory", "  Back"]);
     const command = COMMAND_REGISTRY.find((c) => c.name === "cost");
     expect(command?.description).toBe("System Cost: what each seat's harness reports about cost, beside its tokens, on this daemon (read-only)");
     t.view.dispatch(parseCommand("usage"));
