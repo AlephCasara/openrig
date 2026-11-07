@@ -88,6 +88,23 @@ describe("bounded per-seat cgroup-v2 memory sampler", () => {
     expect(rows.every((r) => r.observed === null)).toBe(true);
   });
 
+  it("rejects a shared scope even when the first seat's memory read fails", async () => {
+    const { deps } = fixture([seat("dev@rig", 201, 200, "%1"), seat("orch@rig", 301, 300, "%2")], [tmuxScope(uuidA), tmuxScope(uuidA)]);
+    const readText = deps.readText!;
+    const memoryPath = `/cg${tmuxScope(uuidA)}/memory.current`;
+    let memoryReads = 0;
+    deps.readText = async (path) => {
+      if (path === memoryPath && ++memoryReads === 1) {
+        throw Object.assign(new Error("EIO"), { code: "EIO" });
+      }
+      return readText(path);
+    };
+    const rows = (await sampleSeatResources(deps)).seats;
+    expect(rows.map((r) => r.reason)).toEqual(["scope_shared_by_seats", "scope_shared_by_seats"]);
+    expect(rows.every((r) => r.availability === "unavailable" && r.observed === null)).toBe(true);
+    expect(memoryReads).toBe(0); // Never sample ambiguous scopes.
+  });
+
   it("rejects stopped seats, stale pane PID and unverifiable replacements", async () => {
     const { deps } = fixture();
     expect((await sampleSeatResources({ ...deps, seats: [{ ...deps.seats[0]!, sessionStatus: "exited" }] })).seats[0]?.reason).toBe("seat_not_running");
