@@ -28,8 +28,9 @@ export interface ClaudeOtlpRequestV1 {
   /** Claude Code's reported/list-price estimate, not provider billing or an invoice. */
   reportedCostUsd: number | null;
   costBasis: "claude-code-reported-list-price-estimate";
-  /** Invalid data remains unavailable and the affected field is identified here. */
+  /** Present but malformed fields, including invalid explicit timestamps even when fallback succeeds. */
   invalidFields: string[];
+  /** Complete iff both invalidFields and unavailableFields are empty. All normalized fields are coverage fields. */
   availability: "partial" | "complete";
   unavailableFields: string[];
 }
@@ -110,18 +111,24 @@ export function extractClaudeOtlpApiRequests(envelope: unknown, verifiedSeatId: 
         const name = first(attrs, "event.name", "event_name");
         if (name !== "api_request" && name !== "claude_code.api_request") continue;
         const invalidFields: string[] = [];
+        const readString = (field: string, map: Map<string, unknown>, ...keys: string[]): string | null => {
+          const raw = first(map, ...keys);
+          const parsed = nonempty(raw);
+          if (keys.some(key => map.has(key)) && parsed === null) invalidFields.push(field);
+          return parsed;
+        };
         const readCount = (field: string, ...keys: string[]): number | null => {
           const raw = first(attrs, ...keys);
           const parsed = count(raw);
-          if (raw !== undefined && parsed === null) invalidFields.push(field);
+          if (keys.some(key => attrs.has(key)) && parsed === null) invalidFields.push(field);
           return parsed;
         };
-        const sourceId = nonempty(first(attrs, "request_id", "request.id"));
-        const model = nonempty(first(attrs, "model", "model_name"));
-        const querySource = nonempty(first(attrs, "query_source"));
+        const sourceId = readString("request_id", attrs, "request_id", "request.id");
+        const model = readString("model", attrs, "model", "model_name");
+        const querySource = readString("query_source", attrs, "query_source");
         const rawCost = first(attrs, "cost_usd");
         const reportedCostUsd = cost(rawCost);
-        if (rawCost !== undefined && reportedCostUsd === null) invalidFields.push("cost_usd");
+        if (attrs.has("cost_usd") && reportedCostUsd === null) invalidFields.push("cost_usd");
         const tokens = {
           input: readCount("input_tokens", "input_tokens"),
           output: readCount("output_tokens", "output_tokens"),
@@ -134,28 +141,32 @@ export function extractClaudeOtlpApiRequests(envelope: unknown, verifiedSeatId: 
         const eventTimestamp = parsedExplicitTimestamp ?? recordTimestamp;
         const eventTimestampSource = parsedExplicitTimestamp !== null ? "event.timestamp" : recordTimestamp !== null ? "timeUnixNano" : "unavailable";
         const observedTimestamp = nanosToIso(record.observedTimeUnixNano);
-        if (explicitTimestamp !== undefined && parsedExplicitTimestamp === null) invalidFields.push("event.timestamp");
+        if (attrs.has("event.timestamp") && parsedExplicitTimestamp === null) invalidFields.push("event.timestamp");
         if (record.timeUnixNano !== undefined && recordTimestamp === null) invalidFields.push("timeUnixNano");
         if (record.observedTimeUnixNano !== undefined && observedTimestamp === null) invalidFields.push("observedTimeUnixNano");
-        const sessionId = nonempty(first(attrs, "session.id", "session_id")) ?? nonempty(first(resourceAttrs, "session.id", "session_id"));
+        const sessionId = readString("session_id", attrs, "session.id", "session_id")
+          ?? readString("session_id", resourceAttrs, "session.id", "session_id");
+        const seatId = nonempty(verifiedSeatId);
+        if (verifiedSeatId !== null && seatId === null) invalidFields.push("seatId");
+        const unavailableFields = [
+          ...(sourceId === null ? ["request_id"] : []),
+          ...(eventTimestamp === null ? ["eventTimestamp"] : []),
+          ...(observedTimestamp === null ? ["observedTimestamp"] : []),
+          ...(sessionId === null ? ["session_id"] : []),
+          ...(seatId === null ? ["seatId"] : []),
+          ...(model === null ? ["model"] : []),
+          ...(querySource === null ? ["query_source"] : []),
+          ...(reportedCostUsd === null ? ["cost_usd"] : []),
+          ...Object.entries(tokens).filter(([, value]) => value === null).map(([key]) => `tokens.${key}`),
+        ];
         result.push({
           schemaVersion: 1, runtime: "claude-code", producer: "claude-code-otlp", source: "otlp-http-json-log",
           eventName: name, sourceId, dedupeKey: sourceId === null ? null : `claude-code:api_request:${sourceId}`,
           recordIndex: index, eventTimestamp, eventTimestampSource, observedTimestamp, sessionId,
-          seatId: nonempty(verifiedSeatId), model, modelSource: model === null ? "unavailable" : "attribute", querySource,
+          seatId, model, modelSource: model === null ? "unavailable" : "attribute", querySource,
           tokens, reportedCostUsd, costBasis: "claude-code-reported-list-price-estimate", invalidFields,
-          availability: invalidFields.length === 0 && sourceId !== null && model !== null && reportedCostUsd !== null &&
-            eventTimestamp !== null && Object.values(tokens).every(v => v !== null) ? "complete" : "partial",
-          unavailableFields: [
-            ...((sourceId === null) ? ["request_id"] : []),
-            ...((eventTimestamp === null) ? ["timeUnixNano"] : []),
-            ...((observedTimestamp === null) ? ["observedTimeUnixNano"] : []),
-            ...((sessionId === null) ? ["session_id"] : []),
-            ...((model === null) ? ["model"] : []),
-            ...((querySource === null) ? ["query_source"] : []),
-            ...((reportedCostUsd === null) ? ["cost_usd"] : []),
-            ...Object.entries(tokens).filter(([, value]) => value === null).map(([key]) => `tokens.${key}`),
-          ],
+          availability: invalidFields.length === 0 && unavailableFields.length === 0 ? "complete" : "partial",
+          unavailableFields,
         });
       }
     }

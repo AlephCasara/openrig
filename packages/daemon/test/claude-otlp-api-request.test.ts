@@ -46,6 +46,7 @@ describe("Claude Code OTLP api_request v1 contract", () => {
       eventTimestamp: "2026-11-07T06:40:00.000Z", availability: "complete", invalidFields: [],
       eventTimestampSource: "timeUnixNano",
     });
+    expect(records[0].unavailableFields).toEqual([]);
     expect(records[1]).toMatchObject({
       eventName: "claude_code.api_request", recordIndex: 3, sourceId: "req-2",
       model: null, reportedCostUsd: null, availability: "partial",
@@ -117,5 +118,61 @@ describe("Claude Code OTLP api_request v1 contract", () => {
     ] }] }] })).toEqual([]);
     const [record] = extractClaudeOtlpApiRequests(envelope(log("api_request")));
     expect(record.seatId).toBeNull();
+  });
+
+  it("reports every missing normalized field, including unverified seat, and never reports complete", () => {
+    const [record] = extractClaudeOtlpApiRequests(envelope(log("api_request", [
+      attr("request_id", "req"), attr("model", "model"),
+      integer("input_tokens", "1"), integer("output_tokens", "1"),
+      integer("cache_read_tokens", "0"), integer("cache_creation_tokens", "0"),
+      attr("cost_usd", 0),
+    ], "1794033600000000000")));
+    expect(record.unavailableFields).toContain("seatId");
+    expect(record.unavailableFields).toContain("query_source");
+    expect(record.availability).toBe("partial");
+    expect(record.unavailableFields.length).toBeGreaterThan(0);
+  });
+
+  it("distinguishes invalid-present strings from missing strings, including malformed OTLP scalar", () => {
+    const [record] = extractClaudeOtlpApiRequests(envelope({
+      ...log("api_request", [
+        attr("request.id", "  "), attr("model_name", " "), attr("query_source", 42),
+        attr("session_id", false),
+      ]),
+      attributes: [attr("event.name", "api_request"), attr("request.id", "  "),
+        attr("model_name", " "), attr("query_source", 42), attr("session_id", false)],
+    }));
+    expect(record).toMatchObject({ sourceId: null, model: null, querySource: null, sessionId: "native-session" });
+    expect(record.invalidFields).toEqual(expect.arrayContaining(["request_id", "model", "query_source", "session_id"]));
+    expect(record.unavailableFields).toEqual(expect.arrayContaining(["request_id", "model", "query_source", "seatId"]));
+    expect(record.availability).toBe("partial");
+  });
+
+  it("retains timestamp fallback while keeping invalid explicit timestamp and partial availability", () => {
+    const [record] = extractClaudeOtlpApiRequests(envelope(log("api_request", [
+      attr("event.timestamp", "invalid"), attr("request_id", "r"), attr("model", "m"),
+      attr("query_source", "agent"), integer("input_tokens", "1"),
+      integer("output_tokens", "1"), integer("cache_read_tokens", "0"),
+      integer("cache_creation_tokens", "0"), attr("cost_usd", 0),
+    ], "1794033600000000000")), "seat");
+    expect(record.eventTimestampSource).toBe("timeUnixNano");
+    expect(record.eventTimestamp).toBe("2026-11-07T06:40:00.000Z");
+    expect(record.invalidFields).toContain("event.timestamp");
+    expect(record.availability).toBe("partial");
+  });
+
+  it("marks unsupported OTLP AnyValue types invalid even when scalar decoding returns undefined", () => {
+    const [record] = extractClaudeOtlpApiRequests(envelope({
+      ...log("api_request"),
+      attributes: [attr("event.name", "api_request"),
+        { key: "request_id", value: { arrayValue: { values: [] } } },
+        { key: "model", value: { kvlistValue: { values: [] } } },
+        { key: "event.timestamp", value: { arrayValue: { values: [] } } },
+      ],
+      timeUnixNano: "1794033600000000000",
+    }));
+    expect(record.invalidFields).toEqual(expect.arrayContaining(["request_id", "model", "event.timestamp"]));
+    expect(record.eventTimestampSource).toBe("timeUnixNano");
+    expect(record.availability).toBe("partial");
   });
 });
