@@ -52,6 +52,35 @@ describe("A6 passive dual-runtime projection", () => {
     expect(other.coverage.gaps).not.toContain("codex-unverified-rig-attribution");
   });
 
+  it("excludes foreign-rig Codex resets and duplicates before diagnosing target coverage", () => {
+    const otherNative = (input: number, time: string) => ({ ...native(input, time), session_id: "session-other" });
+    const foreign = [otherNative(100, "2026-11-07T07:00:00Z"), otherNative(10, "2026-11-07T07:02:00Z"), turn("foreign", "session-other"), turn("foreign", "session-other")];
+    const view = runtimeTelemetrySummary("rig-1", inputs({ claude: [], codex: foreign }), timestamp);
+    expect(view.records).toEqual([]);
+    expect(view.sources["codex-usage"]).toEqual({ status: "available", reason: null, records: 0 });
+    expect(view.coverage.status).toBe("available");
+    expect(view.coverage.gaps).toEqual([]);
+
+    const local = { ...turn("local"), model: "test-model", token_usage: { input_tokens: 9, output_tokens: 1, cached_input_tokens: 0, reasoning_output_tokens: 0 } };
+    const crowded = runtimeTelemetrySummary("rig-1", inputs({ claude: [], codex: [...Array.from({ length: 180 }, (_, i) => turn(`foreign-${i}`, "session-other")), local] }), timestamp);
+    expect(crowded.records.filter(r => r.runtime === "codex")).toHaveLength(1);
+    expect(crowded.records[0]?.nativeSessionId).toBe("session-a");
+    expect(crowded.coverage.gaps).not.toContain("codex-input-limit");
+    expect(crowded.sources["codex-usage"].status).toBe("available");
+  });
+
+  it("keeps unknown Codex seat and unknown seat-to-rig mapping visible as partial", () => {
+    for (const overrides of [
+      { verifiedCodexSeats: new Map() },
+      { verifiedSeatRigs: new Map([["other-seat", "rig-2"]]) },
+    ]) {
+      const view = runtimeTelemetrySummary("rig-1", inputs({ claude: [], codex: [turn("unverified")], ...overrides }), timestamp);
+      expect(view.records).toEqual([]);
+      expect(view.sources["codex-usage"].status).toBe("partial");
+      expect(view.coverage.gaps).toContain("codex-unverified-rig-attribution");
+    }
+  });
+
   it("bounds a single oversized Claude envelope before decoding", () => {
     const view = runtimeTelemetrySummary("rig-1", inputs({ claude: [{ envelope: claude(...Array.from({ length: 20000 }, (_, i) => `c${i}`)), verifiedSeatId: "claude-seat" }], codex: [] }), timestamp);
     expect(view.records).toHaveLength(128);

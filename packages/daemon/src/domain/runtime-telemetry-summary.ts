@@ -1,6 +1,6 @@
 /** A6: bounded read projection over caller-supplied A4/A5 records. No collector or storage. */
 import { extractClaudeOtlpApiRequests } from "./claude-otlp-api-request.js";
-import { collectCodexUsageHistory } from "./codex-usage-history.js";
+import { collectCodexUsageHistory, decodeCodexUsageRecord } from "./codex-usage-history.js";
 
 export interface RuntimeTelemetryInputs {
   /** Inputs must come from a verified, explicitly configured source. */
@@ -30,6 +30,8 @@ export interface RuntimeTelemetryRecord {
 }
 
 const MAX_INPUT = 128;
+/** Bound attribution inspection separately so unrelated rigs do not consume this rig's record budget. */
+const MAX_CODEX_SCOPE_SCAN = 8192;
 const MAX_RECORDS = 128;
 const sources = ["claude-otlp", "codex-usage"] as const;
 /** Limit traversal before invoking the A4 decoder; preserve A4's unrestricted public contract. */
@@ -102,12 +104,24 @@ export function runtimeTelemetrySummary(rigId: string, supplied: RuntimeTelemetr
     status["claude-otlp"] = { status: claudePartial ? "partial" : "available", reason: claudePartial ? "record-coverage-incomplete" : null, records: count };
   }
   if (supplied?.codex !== undefined) {
-    const history = collectCodexUsageHistory(supplied.codex.slice(0, MAX_INPUT), supplied.verifiedCodexSeats);
-    if (supplied.codex.length > MAX_INPUT) gaps.push("codex-input-limit");
+    const scoped: unknown[] = [];
+    let inputLimited = supplied.codex.length > MAX_CODEX_SCOPE_SCAN;
+    let unknownAttribution = false;
+    for (const raw of supplied.codex.slice(0, MAX_CODEX_SCOPE_SCAN)) {
+      const decoded = decodeCodexUsageRecord(raw, supplied.verifiedCodexSeats);
+      if (!decoded) continue;
+      const scope = seatScope(decoded.seatSession);
+      if (scope === "other-rig") continue;
+      if (scope === "unknown") unknownAttribution = true;
+      if (scoped.length >= MAX_INPUT) { inputLimited = true; break; }
+      scoped.push(raw);
+    }
+    const history = collectCodexUsageHistory(scoped, supplied.verifiedCodexSeats);
+    if (inputLimited) gaps.push("codex-input-limit");
     gaps.push(...history.coverage.gaps);
     if (history.coverage.duplicateRecords) gaps.push("codex-duplicate-record");
     if (history.coverage.resets) gaps.push("codex-counter-reset");
-    let missing = false;
+    let missing = unknownAttribution;
     let count = 0;
     for (const item of history.records) {
       const scope = seatScope(item.seatSession);
@@ -120,7 +134,7 @@ export function runtimeTelemetrySummary(rigId: string, supplied: RuntimeTelemetr
         tokens: { ...item.tokens, cacheWriteInput: null }, cost: item.cost,
         availability: item.availability, gaps: [...item.invalidFields, ...item.unavailableFields] });
     }
-    const partial = missing || supplied.codex.length > MAX_INPUT || history.coverage.gaps.length > 0 || history.coverage.duplicateRecords > 0 || history.records.some(r => r.availability === "partial");
+    const partial = missing || inputLimited || history.coverage.gaps.length > 0 || history.coverage.duplicateRecords > 0 || history.records.some(r => r.availability === "partial");
     status["codex-usage"] = { status: partial ? "partial" : "available", reason: partial ? "coverage-gaps-or-unknown-attribution" : null, records: count };
   }
   records.sort((a, b) => (a.observedAt ?? "").localeCompare(b.observedAt ?? "") || a.runtime.localeCompare(b.runtime));
