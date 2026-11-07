@@ -252,6 +252,35 @@ export class DaemonClient {
     return { body: { seats: data["seats"] as import("./cost/cost-read.js").CostBody["seats"], note: typeof data["note"] === "string" ? data["note"] : "" } };
   }
 
+  /** A1 passive cgroup-v2 sample, strictly validated before it reaches the view. */
+  async seatMemory(): Promise<import("./memory/memory-model.js").MemoryRead["status"]> {
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.baseUrl}/api/ps/seat-resources`, { headers: this.headers, signal: AbortSignal.timeout(5_000) });
+    } catch (error) {
+      return { status: null, error: error instanceof Error ? error.message : "Memory read failed" };
+    }
+    const raw: unknown = await res.json().catch(() => null);
+    const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+    if (!res.ok) return { status: res.status, error: object(raw) && typeof raw.error === "string" ? raw.error : `HTTP ${res.status}` };
+    const validBytes = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+    const validSeat = (value: unknown): boolean => {
+      if (!object(value) || typeof value.sessionName !== "string" || !value.sessionName || typeof value.rigId !== "string" || typeof value.state !== "string") return false;
+      if (!["available", "unavailable", "unsupported"].includes(String(value.availability))) return false;
+      if (value.availability !== "available") return value.observed === null && typeof value.reason === "string" && value.reason.length > 0;
+      if (value.reason !== null || !object(value.observed)) return false;
+      const observed = value.observed;
+      return observed.source === "cgroup-v2" && validBytes(observed.bytesCurrent)
+        && (observed.bytesLimit === null || validBytes(observed.bytesLimit))
+        && (observed.swapBytesCurrent === undefined || validBytes(observed.swapBytesCurrent));
+    };
+    if (!object(raw) || raw.schemaVersion !== 1 || typeof raw.sampledAt !== "string" || !Number.isFinite(Date.parse(raw.sampledAt))
+      || typeof raw.host !== "string" || !raw.host || !Array.isArray(raw.seats) || !raw.seats.every(validSeat)) {
+      return { status: res.status, error: "the response was not a valid seat-resources/v1 view" };
+    }
+    return { body: raw as unknown as import("./memory/memory-model.js").MemoryBody };
+  }
+
   /** Bounded canonical findings; the TUI filters this one record set by scope. */
   healthFindings(limit = 200) {
     return this.get(`/api/health?limit=${limit}`);

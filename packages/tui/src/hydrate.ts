@@ -464,6 +464,12 @@ export async function hydrateSnapshot(
     return { ...emptySnapshot(), cost: { status }, readErrors, hydratedAt: new Date().toISOString() };
   }
 
+  if (viewContext?.section === "memory") {
+    const status = await client.seatMemory();
+    if (!("body" in status)) readErrors.push(`memory: ${status.error}`);
+    return { ...emptySnapshot(), memory: { status }, readErrors, hydratedAt: new Date().toISOString() };
+  }
+
   // USAGE: one GET of the provider read model, answered from the daemon's memory. Never the refresh route. Only
   // when the model has no usage rows does it read the config browser, to tell "off" from "not served".
   if (viewContext?.section === "usage") {
