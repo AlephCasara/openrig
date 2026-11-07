@@ -4,8 +4,19 @@ import { projectionLane } from "../domain/projection-lane.js";
 
 import { availableParallelism, loadavg, platform } from "node:os";
 import { getTranscriptCaptureStats } from "../domain/transcript-rotation.js";
+import { getNodeInventoryForAllRigs } from "../domain/node-inventory.js";
+import { sampleSeatResources } from "../domain/seat-resource-sampler.js";
+import type { TmuxAdapter } from "../adapters/tmux.js";
 
 export const psRoutes = new Hono();
+
+psRoutes.get("/seat-resources", async (c) => {
+  const psService = c.get("psProjectionService" as never) as PsProjectionService;
+  const tmux = c.get("tmuxAdapter" as never) as Pick<TmuxAdapter, "getPanePid">;
+  const inventory = await projectionLane.run(() => getNodeInventoryForAllRigs(psService.db));
+  const seats = [...inventory.values()].flat();
+  return c.json(await sampleSeatResources({ seats, getPanePid: (pane) => tmux.getPanePid(pane) }));
+});
 
 // Separate opt-in payload: the ordinary /api/ps bare-array contract is unchanged.
 psRoutes.get("/resources", (c) => {
