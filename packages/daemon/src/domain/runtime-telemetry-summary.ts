@@ -112,12 +112,13 @@ export function runtimeTelemetrySummary(rigId: string, supplied: RuntimeTelemetr
       if (!decoded) continue;
       const scope = seatScope(decoded.seatSession);
       if (scope === "other-rig") continue;
-      if (scope === "unknown") unknownAttribution = true;
+      if (scope === "unknown") { unknownAttribution = true; continue; }
       if (scoped.length >= MAX_INPUT) { inputLimited = true; break; }
       scoped.push(raw);
     }
     const history = collectCodexUsageHistory(scoped, supplied.verifiedCodexSeats);
     if (inputLimited) gaps.push("codex-input-limit");
+    if (unknownAttribution) gaps.push("codex-unverified-rig-attribution");
     gaps.push(...history.coverage.gaps);
     if (history.coverage.duplicateRecords) gaps.push("codex-duplicate-record");
     if (history.coverage.resets) gaps.push("codex-counter-reset");

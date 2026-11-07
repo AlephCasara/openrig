@@ -81,6 +81,22 @@ describe("A6 passive dual-runtime projection", () => {
     }
   });
 
+  it("does not attribute unknown-session Codex resets, duplicates, or overlap gaps to a rig", () => {
+    const unknownNative = (input: number, time: string) => ({ ...native(input, time), session_id: "unknown-session" });
+    const unverified = [unknownNative(100, "2026-11-07T07:00:00Z"), turn("unknown-turn", "unknown-session"), unknownNative(10, "2026-11-07T07:02:00Z"), turn("unknown-turn", "unknown-session")];
+    const view = runtimeTelemetrySummary("rig-1", inputs({ claude: [], codex: unverified, verifiedCodexSeats: new Map(), verifiedSeatRigs: new Map() }), timestamp);
+    expect(view.records).toEqual([]);
+    expect(view.sources["codex-usage"]).toEqual({ status: "partial", reason: "coverage-gaps-or-unknown-attribution", records: 0 });
+    expect(view.coverage.status).toBe("partial");
+    expect(view.coverage.gaps).toContain("codex-unverified-rig-attribution");
+    for (const diagnostic of ["counter-reset:unknown-session", "snapshot-turn-coverage-unverified", "codex-duplicate-record", "codex-counter-reset"]) {
+      expect(view.coverage.gaps).not.toContain(diagnostic);
+    }
+    expect(view.coverage.totalTokens).toBeNull();
+    expect(view.coverage.billingUsd).toBeNull();
+    expect(view.exporter).toEqual({ status: "unavailable", reason: "no-external-health-contract" });
+  });
+
   it("bounds a single oversized Claude envelope before decoding", () => {
     const view = runtimeTelemetrySummary("rig-1", inputs({ claude: [{ envelope: claude(...Array.from({ length: 20000 }, (_, i) => `c${i}`)), verifiedSeatId: "claude-seat" }], codex: [] }), timestamp);
     expect(view.records).toHaveLength(128);
