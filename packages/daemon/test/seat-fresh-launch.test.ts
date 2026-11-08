@@ -24,6 +24,7 @@ import { deriveOriented } from "../src/domain/startup-proof.js";
 import { deriveRehydrateSessionIdByNode } from "../src/domain/active-occupant.js";
 import { readFreshOccupantRelations } from "../src/domain/fresh-occupant-relation.js";
 import type { NativeProcessLister, NativeProcessRow } from "../src/domain/native-process-lineage.js";
+import type { SeatRecapAge } from "../src/domain/seat-recap-freshness.js";
 
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { CLAUDE_BYPASS_CONSENT } from "./fixtures/claude-bypass-consent.js";
@@ -59,6 +60,23 @@ describe("SeatLifecycleService.launchFresh", () => {
   let activitySwaps: Array<{ nodeId: string; generation: string }>;
   let service: SeatLifecycleService;
   let listProcesses: NativeProcessLister;
+  let nodeLauncher: NodeLauncher;
+  let startupOrchestrator: StartupOrchestrator;
+
+  const makeService = (recapFreshness?: (seatRef: string) => SeatRecapAge) => new SeatLifecycleService({
+    db,
+    rigRepo,
+    sessionRegistry,
+    eventBus,
+    tmuxAdapter: tmux,
+    listProcesses: () => listProcesses(),
+    nodeLauncher,
+    startupOrchestrator,
+    runtimeAdapters,
+    occupantInvalidator: { invalidateRetiringOccupant: (input) => invalidations.push(input) },
+    activityOracle: { declareOccupantSwap: (nodeId, generation) => activitySwaps.push({ nodeId, generation }) },
+    ...(recapFreshness ? { recapFreshness } : {}),
+  });
 
   beforeEach(() => {
     db = createFullTestDb();
@@ -118,8 +136,8 @@ describe("SeatLifecycleService.launchFresh", () => {
       },
       checkReady: async () => ({ ready: true }),
     };
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
-    const startupOrchestrator = new StartupOrchestrator({
+    nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    startupOrchestrator = new StartupOrchestrator({
       db,
       sessionRegistry,
       eventBus,
@@ -132,19 +150,7 @@ describe("SeatLifecycleService.launchFresh", () => {
       executableName: "codex", command: "/opt/native/codex -m model", argv: ["/opt/native/codex", "-m", "model"],
       startedAt: "Sat Jan  1 12:00:00 2000" }];
     runtimeAdapters = { "claude-code": adapter, codex: { ...adapter, runtime: "codex" } };
-    service = new SeatLifecycleService({
-      db,
-      rigRepo,
-      sessionRegistry,
-      eventBus,
-      tmuxAdapter: tmux,
-      listProcesses: () => listProcesses(),
-      nodeLauncher,
-      startupOrchestrator,
-      runtimeAdapters,
-      occupantInvalidator: { invalidateRetiringOccupant: (input) => invalidations.push(input) },
-      activityOracle: { declareOccupantSwap: (nodeId, generation) => activitySwaps.push({ nodeId, generation }) },
-    });
+    service = makeService();
   });
 
   afterEach(() => db.close());
@@ -402,6 +408,31 @@ describe("SeatLifecycleService.launchFresh", () => {
     }
     return { rig, node, session, sessionName };
   }
+
+  it("warns before planning and executing a fresh launch when the authored recap is older than queue activity", async () => {
+    const seat = seedSeat({ clean: true });
+    const age: SeatRecapAge = {
+      seat: {
+        rigName: seat.rig.name,
+        logicalId: seat.node.logicalId,
+        canonicalSessionName: seat.sessionName,
+        folderName: seat.node.logicalId,
+        seatDir: "/topology/rigs/fresh-rig/seats/dev.impl",
+      },
+      recapPath: "/topology/rigs/fresh-rig/seats/dev.impl/RECAP.md",
+      recapWrittenAt: "2026-11-08T06:00:00.000Z",
+      reference: { kind: "latest-queue", qitemId: "qitem-fixture", at: "2026-11-08T07:00:00.000Z" },
+      stale: true,
+      status: "stale",
+    };
+    service = makeService(() => age);
+
+    const plan = await service.planFresh({ seatRef: seat.sessionName, fresh: true });
+    expect(plan).toMatchObject({ ok: true, warnings: expect.arrayContaining([expect.stringContaining("Authored recap for dev.impl is stale")]) });
+
+    const launched = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, reason: "replace stale-context occupant" });
+    expect(launched).toMatchObject({ ok: true, warnings: expect.arrayContaining([expect.stringContaining("Authored recap for dev.impl is stale")]) });
+  });
 
   // OPR.0.7.0.9: the fresh-launch plan lists the seat's own launch additions (what its launch will pass), and null for
   // a seat without any. It writes nothing.

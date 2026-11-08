@@ -44,6 +44,7 @@ import { prepareDaemonAutoStart } from "../daemon-auto-start.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
 import type { StatusDeps } from "./status.js";
 import { reconstructionCommand } from "./context-reconstruction.js";
+import { openConfiguredLocalDb } from "../local-db.js";
 
 const contextRuntimeArg = enumArg(["claude-code", "claude", "codex"]);
 
@@ -431,36 +432,56 @@ Examples:
     .description("Walk the topology tree for one chain filename (instance -> rig -> optional pod -> optional seat), keyed off topology.root")
     .requiredOption("--rig <rig>", "Rig name (the rigs/<rig> altitude)")
     .option("--pod <pod>", "Pod id (the pods/<pod> altitude); omit when no pod context is selected")
-    .option("--seat <seat>", "Seat folder name (<pod>-<member>, e.g. dev1-qa); omit for a rig-level trace")
+    .option("--seat <seat>", "Registered seat ref: logical id, canonical session name, or unique session member; omit for a rig-level trace")
     .requiredOption("--name <file>", "Chain filename, identical at every altitude (e.g. LEARNED.md, CULTURE.md)")
     .option("--json", "JSON output for agents")
     .action(async (opts: { rig: string; pod?: string; seat?: string; name: string; json?: boolean }) => {
       const { ConfigStore } = await import("../config-store.js");
       const { traceTopologyChain } = await import("../lib/topology-trace.js");
+      const { resolveTopologySeat, listOrphanTopologySeatFolders } = await import("@openrig/daemon/seat-recap-store");
       const store = new ConfigStore();
       const resolved = store.resolveWithSource("topology.root");
       let result;
+      let seatFolder = opts.seat ?? null;
+      let resolvedSeat: { logicalId: string; canonicalSessionName: string; folderName: string } | null = null;
+      let orphanSeatFolders: Array<{ name: string; path: string; kind: string }> = [];
+      let db: ReturnType<typeof openConfiguredLocalDb> | undefined;
       try {
+        if (opts.seat !== undefined && opts.seat.trim() === "") {
+          throw new Error("invalid seat reference: --seat cannot be blank");
+        }
+        if (opts.seat !== undefined) {
+          db = openConfiguredLocalDb();
+          const seat = resolveTopologySeat(db, { topologyRoot: String(resolved.value), rigName: opts.rig, seatRef: opts.seat });
+          seatFolder = seat.folderName;
+          resolvedSeat = { logicalId: seat.logicalId, canonicalSessionName: seat.canonicalSessionName, folderName: seat.folderName };
+          orphanSeatFolders = listOrphanTopologySeatFolders(db, { topologyRoot: String(resolved.value), rigName: opts.rig });
+        }
         result = traceTopologyChain({
           topologyRoot: String(resolved.value),
           name: opts.name,
           rig: opts.rig,
           pod: opts.pod ?? null,
-          seat: opts.seat ?? null,
+          seat: seatFolder,
         });
       } catch (err) {
         // r2-B3: traversal-shaped input is a clean refusal, never a stack trace.
         console.error(err instanceof Error ? err.message : String(err));
         process.exitCode = 1;
         return;
+      } finally {
+        db?.close();
       }
       // Advisories go to stderr on BOTH output modes — a legacy read must
       // never pass silently, and stdout stays clean for piping.
       for (const level of result.levels) {
         if (level.advisory) console.error(`ADVISORY ${level.advisory}`);
       }
+      for (const orphan of orphanSeatFolders) {
+        console.error(`ADVISORY orphan seat folder '${orphan.name}' is not mapped to a registered seat in rig '${opts.rig}'.`);
+      }
       if (opts.json) {
-        console.log(JSON.stringify({ topologyRootSource: resolved.source, ...result }, null, 2));
+        console.log(JSON.stringify({ topologyRootSource: resolved.source, resolvedSeat, orphanSeatFolders, ...result }, null, 2));
         return;
       }
       console.log(`chain "${result.name}" under topology.root=${result.topologyRoot} (source: ${resolved.source})`);
@@ -777,6 +798,45 @@ Examples:
       }
     });
 
+  cmd.command("recap-age")
+    .argument("<seat>", "Registered seat ref: logical id, canonical session name, or unique session member")
+    .description("Report when a seat's authored recap was written and whether it is stale against queue activity")
+    .option("--rig <rig>", "Limit resolution to one rig")
+    .option("--since <time-or-qitem>", "Compare with an ISO/date-time or qitem creation time; default is latest queue activity for the seat")
+    .option("--json", "JSON output")
+    .action(async (seatRef: string, opts: { rig?: string; since?: string; json?: boolean }) => {
+      let db: ReturnType<typeof openConfiguredLocalDb> | undefined;
+      try {
+        const { readSeatRecapAge, listOrphanTopologySeatFolders } = await import("@openrig/daemon/seat-recap-store");
+        db = openConfiguredLocalDb();
+        const topologyRoot = String(new ConfigStore().resolveWithSource("topology.root").value);
+        const age = readSeatRecapAge(db, {
+          topologyRoot,
+          seatRef,
+          ...(opts.rig ? { rigName: opts.rig } : {}),
+          ...(opts.since ? { since: opts.since } : {}),
+        });
+        const orphanSeatFolders = listOrphanTopologySeatFolders(db, { topologyRoot, rigName: age.seat.rigName });
+        if (opts.json) {
+          console.log(JSON.stringify({ ...age, orphanSeatFolders }, null, 2));
+          return;
+        }
+        console.log(`Seat: ${age.seat.logicalId} (${age.seat.canonicalSessionName}; folder ${age.seat.folderName})`);
+        console.log(`Recap: ${age.recapWrittenAt ?? "missing"} (${age.recapPath})`);
+        if (age.reference) console.log(`Reference: ${age.reference.at}${age.reference.qitemId ? ` (${age.reference.qitemId})` : ""}`);
+        else console.log("Reference: no queue activity found");
+        console.log(`Status: ${age.status}`);
+        for (const orphan of orphanSeatFolders) {
+          console.error(`ADVISORY orphan seat folder '${orphan.name}' is not mapped to a registered seat in rig '${age.seat.rigName}'.`);
+        }
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exitCode = 1;
+      } finally {
+        db?.close();
+      }
+    });
+
   // OPR.0.5.3.5 mini-req 7 — the outgoing occupant's boundary write (the Q2
   // requirement the store alone does not satisfy). Daemon-independent like
   // trace: the seat dir resolves from topology.root CONFIG; the write flows
@@ -800,10 +860,14 @@ Examples:
             : `ADVISORY nonstandard-unverified-marker (line ${f.line}): use the canonical 'UNVERIFIED:' form so uncertain facts stay findable.`);
         }
         let written: { path: string; superseded: number; daemonUrl?: string };
+        let db: ReturnType<typeof openConfiguredLocalDb> | undefined;
         try {
-          written = writeSeatRecapAt({ topologyRoot, rig: opts.rig, seat: opts.seat, content });
+          db = openConfiguredLocalDb();
+          written = writeSeatRecapAt({ db, topologyRoot, rig: opts.rig, seat: opts.seat, content });
         } catch (err) {
-          if (!WRITE_REFUSED_CODES.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+          const code = (err as NodeJS.ErrnoException).code ?? "";
+          const localDbUnavailable = code === "ENOENT" || code === "SQLITE_CANTOPEN" || code === "SQLITE_READONLY";
+          if (!WRITE_REFUSED_CODES.has(code) && !localDbUnavailable) throw err;
           // The daemon owns the topology tree (it primes RECAP.md at the next rebuild): it writes the same recap through
           // the same store, so a sandboxed seat saves its recap without a wider writable root. Said first, so a daemon
           // that can't be reached is reported with its reason.
@@ -812,6 +876,8 @@ Examples:
           const res = await client.post<{ path?: string; superseded?: number; message?: string }>("/api/context-packs/seat-recap", { rig: opts.rig, seat: opts.seat, content });
           if (res.status !== 200 || typeof res.data.path !== "string") throw new Error(res.data.message ?? `Daemon returned HTTP ${res.status}`);
           written = { path: res.data.path, superseded: res.data.superseded ?? 0, daemonUrl: client.baseUrl };
+        } finally {
+          db?.close();
         }
         console.log(`Recap written: ${written.path}${written.superseded > 0 ? ` (${written.superseded} superseded predecessor${written.superseded === 1 ? "" : "s"} retained)` : ""}`
           + (written.daemonUrl ? `, by the daemon at ${written.daemonUrl}` : ""));

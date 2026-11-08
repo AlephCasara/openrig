@@ -771,7 +771,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     process.env.OPENRIG_SHARED_DOCS_ROOT?.trim() || nodePath.join(daemonHome, ".openrig", "shared-docs"), daemonHome);
   // A Codex seat's own topology folder (its LEARNED.md and recap) as a writable root; topology.root is read per launch.
   const prepareSeatFolder = (sessionName: string) => prepareCodexSeatFolder(sessionName,
-    String(new ContextPackSettingsStore().resolveOne("topology.root").value));
+    String(new ContextPackSettingsStore().resolveOne("topology.root").value), db);
   // launch.codex_login_shell, read at each Codex launch (absent or unreadable = off).
   const readCodexLoginShell = () => { try { return new ContextPackSettingsStore().resolveOne("launch.codex_login_shell").value === true; } catch { return false; } };
   const codexResume = new CodexResumeAdapter(tmuxAdapter, { ensureManagedConfig: async (home?: string) => { await codexAdapter.ensureManagedConfig(home); }, prepareTeamWorkspace, prepareSeatFolder, resolveGitAddDirs: resolveCodexGitAddDirs, seatLaunchEnvironment, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), readNetworkDefault: readCodexNetworkDefault, codexLoginShell: readCodexLoginShell });

@@ -13,6 +13,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { writeSeatRecap, listRecapChain, validateRecapContract } from "../src/domain/context-packs/seat-recap-store.js";
+import type Database from "better-sqlite3";
+import { createFullTestDb } from "./helpers/test-app.js";
 
 const GOOD_RECAP = [
   "## Recent Decisions",
@@ -23,8 +25,18 @@ const GOOD_RECAP = [
 ].join("\n");
 
 let seatDir: string;
-beforeEach(() => { seatDir = mkdtempSync(join(tmpdir(), "s05-recap-")); });
-afterEach(() => rmSync(seatDir, { recursive: true, force: true }));
+let db: Database.Database;
+beforeEach(() => {
+  seatDir = mkdtempSync(join(tmpdir(), "s05-recap-"));
+  db = createFullTestDb();
+  db.prepare("INSERT INTO rigs (id, name) VALUES (?, ?)").run("rig-r1", "r1");
+  db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES (?, ?, ?, ?)").run("node-s1", "rig-r1", "s1", "codex");
+  db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, ?)").run("session-s1", "node-s1", "s1@r1", "running");
+});
+afterEach(() => {
+  db.close();
+  rmSync(seatDir, { recursive: true, force: true });
+});
 
 describe("writeSeatRecap — superseded-chain retention (Q2-Amendment 1(b))", () => {
   it.each(["##", "##\n### Child\nchild prose", "###", "#", "#\n### Next\n## Next"])("retains a recap containing the blank heading boundary %j", (heading) => {
@@ -138,7 +150,7 @@ describe("resolveAuthoredRecapPointer — one-home seat-ref parsing (canonical p
     const { mkdirSync: mkd, writeFileSync: wf } = await import("node:fs");
     mkd(join(seatDir, "rigs", "r1", "seats", "s1"), { recursive: true });
     wf(join(seatDir, "rigs", "r1", "seats", "s1", "RECAP.md"), "## Recent Decisions\nx");
-    const res = resolveAuthoredRecapPointer("s1@r1", seatDir);
+    const res = resolveAuthoredRecapPointer("s1@r1", seatDir, db);
     expect(res).toEqual({ address: "seat:RECAP.md", chainLength: 0 });
   });
 
@@ -148,16 +160,16 @@ describe("resolveAuthoredRecapPointer — one-home seat-ref parsing (canonical p
     // Either way no directory exists — but the labeled path must reflect the
     // CANONICAL parse so the absence text points at the true shape.
     const { resolveAuthoredRecapPointer } = await import("../src/domain/context-packs/seat-recap-store.js");
-    const res = resolveAuthoredRecapPointer("s1@r1@host-x", seatDir);
+    const res = resolveAuthoredRecapPointer("s1@r1@host-x", seatDir, db);
     expect("absentReason" in res).toBe(true);
     const reason = (res as { absentReason: string }).absentReason;
-    expect(reason).toContain(join("rigs", "r1@host-x", "seats", "s1"));
+    expect(reason).toContain("not registered");
   });
 
   it("a malformed ref is a LABELED absence naming the parse verdict — never a throw, never a guess", async () => {
     const { resolveAuthoredRecapPointer } = await import("../src/domain/context-packs/seat-recap-store.js");
     for (const bad of ["noatsign", "@r1", "s1@"]) {
-      const res = resolveAuthoredRecapPointer(bad, seatDir);
+      const res = resolveAuthoredRecapPointer(bad, seatDir, db);
       expect("absentReason" in res).toBe(true);
       expect((res as { absentReason: string }).absentReason).toContain(bad);
     }

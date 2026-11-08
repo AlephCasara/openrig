@@ -12,3 +12,16 @@ export {
   type RecapChainEntry,
   type RecapContractFinding,
 } from "./domain/context-packs/seat-recap-store.js";
+export {
+  resolveTopologySeat,
+  listOrphanTopologySeatFolders,
+  TopologySeatResolutionError,
+  type ResolvedTopologySeat,
+  type OrphanTopologySeatFolder,
+} from "./domain/topology-seat-resolution.js";
+export {
+  readSeatRecapAge,
+  staleRecapWarning,
+  type SeatRecapAge,
+  type RecapReference,
+} from "./domain/seat-recap-freshness.js";

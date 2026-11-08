@@ -94,8 +94,20 @@ performs the walk: it prints each selected altitude root-first (general →
 specific), marks whether content came from `topology.root`, the legacy tree
 (with the advisory on stderr), or is absent, and needs no running daemon —
 orientation is exactly when the daemon may be down. Existing rig/seat traces
-remain valid; selecting `--pod` adds that context domain between them. `--json`
-returns the structured result.
+remain valid; selecting `--pod` adds that context domain between them. When a
+seat is named, OpenRig resolves the registered seat first: its logical id,
+canonical session name, or unique session-member name may be used. The resolver
+preserves a registered seat's existing physical folder when necessary, otherwise
+new storage uses the logical id. Unknown seats fail with the valid logical ids,
+and unmapped folders under `seats/` are reported as orphan advisories. `--json`
+returns the structured result, including the resolved seat and orphan folders.
+
+`rig context recap-age <seat> [--rig <rig>] [--since <time-or-qitem>]` reports
+the current `RECAP.md` write time and whether it is stale. `--since <qitem>`
+compares against that queue item's creation time; without `--since`, the command
+uses the seat's latest queue activity. `rig seat launch --fresh` and its plan
+surface warn when the authored recap is missing or older than that activity so
+a fresh occupant does not silently inherit stale handover context.
 
 Your reads ARE the walk: a trace assembled from memory is a recitation that
 reproduces the drift it was meant to catch. Run it; do not recall it.

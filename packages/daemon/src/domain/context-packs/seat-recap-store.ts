@@ -24,8 +24,9 @@
 import { closeSync, copyFileSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
 import { validateMarkdownAddressability, parseMarkdownSections } from "../markdown-address.js";
-import { parseSessionName } from "../session-name.js";
+import { resolveTopologySeat, TopologySeatResolutionError } from "../topology-seat-resolution.js";
 
 export const RECAP_FILENAME = "RECAP.md";
 const CHAIN_DIRNAME = "recap-superseded";
@@ -139,38 +140,19 @@ export function writeSeatRecap(opts: { seatDir: string; content: string; now?: (
   }
 }
 
-const SEAT_ADDRESS_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-
 /** Write a seat's recap by its topology address (`rigs/<rig>/seats/<seat>`), the one path the CLI and the daemon share:
  *  each name is one bounded segment, the rig already exists, none of the rig, `seats` or seat folders is a symlink or a
  *  file, and a missing seat folder is created. Inside the seat folder, a link at RECAP.md or recap-superseded/ is refused
  *  (`writeSeatRecap`). Returns where the recap landed and how many predecessors the chain retains. */
-export function writeSeatRecapAt(opts: { topologyRoot: string; rig: string; seat: string; content: string; now?: () => number }): { path: string; superseded: number } {
-  for (const [kind, value] of [["rig", opts.rig], ["seat", opts.seat]] as const) {
-    if (value === "." || value === ".." || !SEAT_ADDRESS_SEGMENT.test(value)) {
-      throw new RecapWriteError(`unsafe ${kind} segment '${value}' — topology addresses require one bounded path segment`);
-    }
+export function writeSeatRecapAt(opts: { db: Database.Database; topologyRoot: string; rig: string; seat: string; content: string; now?: () => number }): { path: string; superseded: number } {
+  let resolved;
+  try {
+    resolved = resolveTopologySeat(opts.db, { topologyRoot: opts.topologyRoot, rigName: opts.rig, seatRef: opts.seat });
+  } catch (error) {
+    if (error instanceof TopologySeatResolutionError) throw new RecapWriteError(error.message);
+    throw error;
   }
-  const rigsDir = join(opts.topologyRoot, "rigs");
-  const rigDir = join(rigsDir, opts.rig);
-  if (!existsSync(rigDir)) {
-    throw new RecapWriteError(`rig directory ${rigDir} does not exist — check --rig against the topology tree (topology.root=${opts.topologyRoot}).`);
-  }
-  let cursor = rigsDir;
-  for (const segment of [opts.rig, "seats", opts.seat]) {
-    cursor = join(cursor, segment);
-    let stat: ReturnType<typeof lstatSync>;
-    try {
-      stat = lstatSync(cursor);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") break;
-      throw err;
-    }
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new RecapWriteError(`unsafe seat address '${opts.rig}/seats/${opts.seat}' — '${cursor}' is a symlink or not a directory, so the recap would land outside the topology tree.`);
-    }
-  }
-  const seatDir = join(rigDir, "seats", opts.seat);
+  const seatDir = resolved.seatDir;
   mkdirSync(seatDir, { recursive: true });
   writeSeatRecap({ seatDir, content: opts.content, now: opts.now });
   return { path: join(seatDir, RECAP_FILENAME), superseded: listRecapChain(seatDir).length };
@@ -231,12 +213,18 @@ export function validateRecapContract(content: string): RecapContractFinding[] {
 export function resolveAuthoredRecapPointer(
   seatRef: string,
   topologyRoot: string,
+  db: Database.Database,
 ): { address: string; chainLength: number } | { absentReason: string } {
-  const parsed = parseSessionName(seatRef);
-  if (parsed.kind !== "canonical") {
-    return { absentReason: `seat ref '${seatRef}' did not parse as canonical <seat>@<rig> (parse verdict: ${parsed.kind}) — authored recap not resolved, never guessed` };
+  let resolved;
+  try {
+    resolved = resolveTopologySeat(db, { topologyRoot, seatRef });
+  } catch (error) {
+    if (error instanceof TopologySeatResolutionError) {
+      return { absentReason: `${error.message} — authored recap not resolved, never guessed` };
+    }
+    throw error;
   }
-  const seatDir = join(topologyRoot, "rigs", parsed.rig, "seats", parsed.member);
+  const seatDir = resolved.seatDir;
   if (!existsSync(join(seatDir, RECAP_FILENAME))) {
     return { absentReason: `no ${RECAP_FILENAME} on the seat tree (${seatDir}) — the predecessor never wrote one` };
   }

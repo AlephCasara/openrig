@@ -20,6 +20,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAuthoredRecapPointer } from "../domain/context-packs/seat-recap-store.js";
 import { buildRebuildPrimingChain } from "../domain/rebuild-priming-chain.js";
+import { readSeatRecapAge } from "../domain/seat-recap-freshness.js";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { transportSenderSession } from "./require-sender-identity.js";
@@ -196,7 +197,7 @@ function handoverDeps(c: Context): ConstructorParameters<typeof SeatHandoverServ
     // door drive instead of silently).
     authoredRecapResolver: (seatRef: string) => {
       const topologyRoot = String(new SettingsStore().resolveOne("topology.root").value);
-      return resolveAuthoredRecapPointer(seatRef, topologyRoot);
+      return resolveAuthoredRecapPointer(seatRef, topologyRoot, rigRepo.db);
     },
     // OPR.0.5.5.5 (fix B3) — the ONE production rebuild priming chain builder
     // (rebuild-priming-chain.ts): RECAP.md, LEARNED.md, latest restore packet
@@ -205,6 +206,7 @@ function handoverDeps(c: Context): ConstructorParameters<typeof SeatHandoverServ
     rebuildPrimingResolver: (seatRef: string) => buildRebuildPrimingChain(seatRef, {
       topologyRoot: String(new SettingsStore().resolveOne("topology.root").value),
       openrigHome: OPENRIG_HOME,
+      db: rigRepo.db,
     }),
     // OPR.0.4.6.PI1 FR-6 — the Pi adapter in the runtime-adapter map exposes
     // the pi-runner sidecar reader; reuse it structurally (no new context var).
@@ -368,6 +370,10 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
     transcripts: (c.get("contextUsageStore" as never) as ContextUsageStore | undefined) ?? undefined,
     piRecords: (c.get("currentModelReader" as never) as import("../domain/model-divergence/current-model-reader.js").CurrentModelReader | undefined) ?? undefined,
     humanRegistry: queueRepo ? () => queueRepo.humanRegistry() : undefined,
+    recapFreshness: (seatRef: string) => readSeatRecapAge(rigRepo.db, {
+      topologyRoot: String(new SettingsStore().resolveOne("topology.root").value),
+      seatRef,
+    }),
   });
 }
 

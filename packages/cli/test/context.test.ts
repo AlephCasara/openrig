@@ -94,12 +94,12 @@ const FIXTURE_PREVIEW = {
 };
 
 describe("rig context CLI (PL-014)", () => {
-  it("describes --seat as a seat folder name", () => {
+  it("describes --seat as a registered seat reference", () => {
     const trace = contextCommand().commands.find((command) => command.name() === "trace");
     const seatOption = trace?.options.find((option) => option.long === "--seat");
-    expect(seatOption?.description).toContain("Seat folder name");
-    expect(seatOption?.description).toContain("<pod>-<member>");
-    expect(seatOption?.description).toContain("dev1-qa");
+    expect(seatOption?.description).toContain("Registered seat ref");
+    expect(seatOption?.description).toContain("logical id");
+    expect(seatOption?.description).toContain("canonical session name");
   });
 
   let server: http.Server;

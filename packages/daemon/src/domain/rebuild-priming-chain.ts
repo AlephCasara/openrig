@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { listRecapChain, RECAP_FILENAME } from "./context-packs/seat-recap-store.js";
-import { parseSessionName } from "./session-name.js";
+import type Database from "better-sqlite3";
+import { resolveTopologySeat, TopologySeatResolutionError } from "./topology-seat-resolution.js";
 
 /**
  * OPR.0.5.5.5 (fix round B3) — THE production rebuild priming chain, extracted
@@ -21,13 +22,18 @@ import { parseSessionName } from "./session-name.js";
  */
 export function buildRebuildPrimingChain(
   seatRef: string,
-  opts: { topologyRoot: string; openrigHome: string },
+  opts: { topologyRoot: string; openrigHome: string; db: Database.Database },
 ): { artifacts: Array<{ address: string; label: string }> } | { emptyReason: string } {
-  const parsed = parseSessionName(seatRef);
-  if (parsed.kind !== "canonical") {
-    return { emptyReason: `seat ref '${seatRef}' did not parse as canonical <seat>@<rig> — no durable chain resolved, never guessed` };
+  let resolved;
+  try {
+    resolved = resolveTopologySeat(opts.db, { topologyRoot: opts.topologyRoot, seatRef });
+  } catch (error) {
+    if (error instanceof TopologySeatResolutionError) {
+      return { emptyReason: `${error.message} — no durable chain resolved, never guessed` };
+    }
+    throw error;
   }
-  const seatDir = join(opts.topologyRoot, "rigs", parsed.rig, "seats", parsed.member);
+  const seatDir = resolved.seatDir;
   const artifacts = [
     { address: join(seatDir, RECAP_FILENAME), label: "authored seat recap (highest trust)" },
     { address: join(seatDir, "LEARNED.md"), label: "seat lineage lessons" },

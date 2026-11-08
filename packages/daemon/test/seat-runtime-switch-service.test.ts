@@ -648,7 +648,7 @@ describe("live seat runtime switch", () => {
     const seatDir = path.join(topologyRoot, "rigs", "seat-rig", "seats", "dev-impl");
     fs.mkdirSync(seatDir, { recursive: true });
     fs.writeFileSync(path.join(seatDir, "RECAP.md"), "# Current position\n");
-    const authoredRecapResolver = vi.fn((seatRef: string) => resolveAuthoredRecapPointer(seatRef, topologyRoot));
+    const authoredRecapResolver = vi.fn((seatRef: string) => resolveAuthoredRecapPointer(seatRef, topologyRoot, db));
     const svc = service({ authoredRecapResolver });
     successorConfirms(svc);
 

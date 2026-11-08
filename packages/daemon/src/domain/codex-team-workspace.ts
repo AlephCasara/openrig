@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseSessionName } from "./session-name.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import type Database from "better-sqlite3";
+import { resolveTopologySeat } from "./topology-seat-resolution.js";
 
 /** The existing pod state scope; malformed and legacy names do not invent a pod. */
 export function codexQueueStateRoot(sessionName: string, sharedDocsRoot: string): string | undefined {
@@ -17,28 +19,13 @@ export function codexQueueStateRoot(sessionName: string, sharedDocsRoot: string)
 /** The seat's own topology folder (`<topology root>/rigs/<rig>/seats/<seat>`), where its LEARNED.md and recap live, made
  *  ready as a Codex writable root: created when missing, since Codex can't create a folder outside its writable roots.
  *  Only that folder. A malformed name, an unsafe segment, or a symlinked rigs/seats segment gives none, with a warning. */
-export function prepareCodexSeatFolder(sessionName: string, topologyRoot: string): string | undefined {
-  const parsed = parseSessionName(sessionName.trim());
-  if (parsed.kind !== "canonical") return undefined;
-  if (![parsed.rig, parsed.member].every(s => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s))) return undefined;
-  const folder = path.join(topologyRoot, "rigs", parsed.rig, "seats", parsed.member);
+export function prepareCodexSeatFolder(sessionName: string, topologyRoot: string, db: Database.Database): string | undefined {
   try {
-    if (!path.isAbsolute(topologyRoot)) throw new Error("topology root must be absolute");
-    // Checked before creating anything: a symlink in rigs/<rig>/seats/<seat> could point the writable root anywhere.
-    let at = topologyRoot;
-    for (const segment of ["rigs", parsed.rig, "seats", parsed.member]) {
-      at = path.join(at, segment);
-      let stat: fs.Stats;
-      try { stat = fs.lstatSync(at); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
-        throw error;
-      }
-      if (stat.isSymbolicLink()) throw new Error(`${at} is a symlink`);
-    }
+    const folder = resolveTopologySeat(db, { topologyRoot, seatRef: sessionName.trim() }).seatDir;
     fs.mkdirSync(folder, { recursive: true });
     return folder;
   } catch (error) {
-    console.warn(`[openrig] Codex seat folder not added (${folder}): ${(error as Error).message}`);
+    console.warn(`[openrig] Codex seat folder not added (${sessionName}): ${(error as Error).message}`);
     return undefined;
   }
 }

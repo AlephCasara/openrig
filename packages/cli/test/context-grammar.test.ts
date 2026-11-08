@@ -26,7 +26,7 @@ const VIEWER_DESCRIPTION_FRAGMENT = "context-usage across running agents";
 // so the delivery-seam exclusion below still holds.
 // Reconstruction inspect/view reads local immutable records; it neither
 // delivers to a seat nor starts or contacts a daemon.
-const LIBRARY_SUBCOMMANDS = ["reconstruction", "work-install", "trace", "compose", "list", "show", "preview", "get", "profile", "recap-write", "sync", "add", "source", "rm"];
+const LIBRARY_SUBCOMMANDS = ["reconstruction", "work-install", "trace", "compose", "list", "show", "preview", "get", "profile", "recap-age", "recap-write", "sync", "add", "source", "rm"];
 
 function topLevelNames(program: Command): string[] {
   return program.commands.map((c) => c.name());

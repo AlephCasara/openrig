@@ -14,6 +14,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ContextPackLibraryService } from "../src/domain/context-packs/context-pack-library-service.js";
 import { contextPacksRoutes } from "../src/routes/context-packs.js";
+import type Database from "better-sqlite3";
+import { createFullTestDb } from "./helpers/test-app.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
 
 const MANIFEST = `
 name: world-install
@@ -42,9 +45,18 @@ describe("GET /library/by-ref/profile — situation-composed delivery (Atom 4b)"
   let tmp: string;
   let libRoot: string;
   let app: Hono;
+  let db: Database.Database;
+  let rigRepo: RigRepository;
   const savedTopologyRoot = process.env["OPENRIG_TOPOLOGY_ROOT"];
 
   beforeEach(() => {
+    db = createFullTestDb();
+    rigRepo = new RigRepository(db);
+    db.prepare("INSERT INTO rigs (id, name) VALUES (?, ?)").run("profile-rig", "r1");
+    db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES (?, ?, ?, ?)").run("profile-s1", "profile-rig", "s1", "codex");
+    db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES (?, ?, ?, ?)").run("profile-s2", "profile-rig", "s2", "codex");
+    db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, ?)").run("profile-session-s1", "profile-s1", "s1@r1", "running");
+    db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, ?)").run("profile-session-s2", "profile-s2", "s2@r1", "running");
     tmp = mkdtempSync(join(tmpdir(), "s05-profile-route-"));
     libRoot = join(tmp, "lib");
     const packDir = join(libRoot, "packs", "world");
@@ -61,12 +73,14 @@ describe("GET /library/by-ref/profile — situation-composed delivery (Atom 4b)"
     app = new Hono();
     app.use("*", async (c, next) => {
       c.set("contextPackLibrary" as never, lib);
+      c.set("rigRepo" as never, rigRepo);
       await next();
     });
     app.route("/api/context-packs", contextPacksRoutes());
   });
 
   afterEach(() => {
+    db.close();
     rmSync(tmp, { recursive: true, force: true });
     if (savedTopologyRoot === undefined) delete process.env["OPENRIG_TOPOLOGY_ROOT"];
     else process.env["OPENRIG_TOPOLOGY_ROOT"] = savedTopologyRoot;
@@ -596,6 +610,7 @@ atoms:
 describe("synthetic world graph — the seat RECAP composes through the real route", () => {
   let tmp: string;
   let app: Hono;
+  let db: Database.Database;
   const savedTopologyRoot = process.env["OPENRIG_TOPOLOGY_ROOT"];
   const SENTINEL = "sentinel-recap-7fce914a8: we chose the atoms graph because drift";
   const PACK_FILES = [
@@ -610,6 +625,13 @@ describe("synthetic world graph — the seat RECAP composes through the real rou
   ];
 
   function buildApp(withRecap: boolean): void {
+    db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    db.prepare("INSERT INTO rigs (id, name) VALUES (?, ?)").run("synthetic-rig", "r1");
+    db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES (?, ?, ?, ?)").run("synthetic-s1", "synthetic-rig", "s1", "codex");
+    db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES (?, ?, ?, ?)").run("synthetic-s2", "synthetic-rig", "s2", "codex");
+    db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, ?)").run("synthetic-session-s1", "synthetic-s1", "s1@r1", "running");
+    db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, ?)").run("synthetic-session-s2", "synthetic-s2", "s2@r1", "running");
     tmp = mkdtempSync(join(tmpdir(), "s05-prod-recap-"));
     const libRoot = join(tmp, "lib");
     const packDir = join(libRoot, "world", "install");
@@ -631,12 +653,14 @@ describe("synthetic world graph — the seat RECAP composes through the real rou
     app = new Hono();
     app.use("*", async (c, next) => {
       c.set("contextPackLibrary" as never, lib);
+      c.set("rigRepo" as never, rigRepo);
       await next();
     });
     app.route("/api/context-packs", contextPacksRoutes());
   }
 
   afterEach(() => {
+    db?.close();
     rmSync(tmp, { recursive: true, force: true });
     if (savedTopologyRoot === undefined) delete process.env["OPENRIG_TOPOLOGY_ROOT"];
     else process.env["OPENRIG_TOPOLOGY_ROOT"] = savedTopologyRoot;

@@ -54,6 +54,7 @@ import { CommunityHarnessRuntimeAdapter, seatAdapter } from "../adapters/communi
 import { sessionCommunityHarnessSelect } from "./session-registry.js";
 import { seatLaunchAdditionsReport } from "./seat-launch-additions.js";
 import { seatSkillPaths } from "./seat-skill-storage.js";
+import { staleRecapWarning, type SeatRecapAge } from "./seat-recap-freshness.js";
 
 /**
  * S5 (OPR.0.5.4.7) — the seat-lifecycle verb surface: set-model, single-seat stop,
@@ -97,6 +98,8 @@ export interface SeatLifecycleDeps {
   piRecords?: Pick<CurrentModelReader, "currentPiRecord">;
   /** The registered people, read when a seat's permission answer owner is chosen; without it no owner can be chosen. */
   humanRegistry?: () => HumanRegistryLoadResult;
+  /** Authored-recap freshness against this seat's durable queue activity. */
+  recapFreshness?: (seatRef: string) => SeatRecapAge;
 }
 
 interface ResolvedSeat {
@@ -321,6 +324,7 @@ export class SeatLifecycleService {
   private readonly transcripts: SeatLifecycleDeps["transcripts"] | null;
   private readonly piRecords: SeatLifecycleDeps["piRecords"] | null;
   private readonly humanRegistry: SeatLifecycleDeps["humanRegistry"] | null;
+  private readonly recapFreshness: SeatLifecycleDeps["recapFreshness"] | null;
 
   constructor(deps: SeatLifecycleDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("SeatLifecycleService: rigRepo must share the same db handle");
@@ -343,6 +347,17 @@ export class SeatLifecycleService {
     this.transcripts = deps.transcripts ?? null;
     this.piRecords = deps.piRecords ?? null;
     this.humanRegistry = deps.humanRegistry ?? null;
+    this.recapFreshness = deps.recapFreshness ?? null;
+  }
+
+  private recapWarnings(seatRef: string): string[] {
+    if (!this.recapFreshness) return [];
+    try {
+      const warning = staleRecapWarning(this.recapFreshness(seatRef));
+      return warning ? [warning] : [];
+    } catch (error) {
+      return [`Authored recap freshness could not be checked for ${seatRef}: ${(error as Error).message}`];
+    }
   }
 
   private terminalPolicyCheck(nodeId: string, action: TerminalAction, operator?: string | null) {
@@ -1438,7 +1453,10 @@ export class SeatLifecycleService {
     if ("code" in prepared) return refusal(prepared);
     const { seat, rig, node, startup, canonicalSessionName } = prepared;
     const blockers: Array<{ code: string; message: string; guidance?: string }> = [];
-    const warnings = ["Snapshot only; execution resolves and validates again. Native readiness is not checked."];
+    const warnings = [
+      "Snapshot only; execution resolves and validates again. Native readiness is not checked.",
+      ...this.recapWarnings(canonicalSessionName),
+    ];
     let complete = true;
     let tmuxUnknown = false;
     const guard = this.tmuxAdapter.deliveryGuard?.preference(node.id);
@@ -1519,8 +1537,9 @@ export class SeatLifecycleService {
     const prepared = this.resolveFreshLaunch(resolved, input.seatRef);
     if ("code" in prepared) return prepared;
     const { seat, node, adapter, startup, canonicalSessionName, nodeLauncher, startupOrchestrator } = prepared;
+    const recapWarnings = this.recapWarnings(canonicalSessionName);
     const historyRefusal = await this.validateFreshHistory(resolved.nodeId, canonicalSessionName, input.seatRef);
-    if (historyRefusal) return historyRefusal;
+    if (historyRefusal) return recapWarnings.length > 0 ? { ...historyRefusal, warnings: recapWarnings } : historyRefusal;
     const retiringRows = this.nonTerminalSessions(node.id);
     // Detached is terminal for process cleanup, but remains a reboot candidate.
     // A deliberate fresh launch must retire that prior history as well.
@@ -1529,7 +1548,7 @@ export class SeatLifecycleService {
     ).all(node.id) as Array<{ id: string }>).map((row) => row.id);
     const retiringGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid ?? null;
 
-    const viewWarnings: string[] = [];
+    const viewWarnings: string[] = [...recapWarnings];
     let canonicalProbe = await this.probeLiveness(
       canonicalSessionName,
       "fresh launch refuses rather than overwrite a possibly-live canonical session",

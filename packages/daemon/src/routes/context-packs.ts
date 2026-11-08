@@ -28,6 +28,8 @@ import { isSeatRecapAddress, makeProfileReadFile, sourceKindForAddress, SourceRe
 import { AddressResolutionError, parseAddress, resolveAddress } from "../domain/markdown-address.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { RecapWriteError, writeSeatRecapAt } from "../domain/context-packs/seat-recap-store.js";
+import { listOrphanTopologySeatFolders, resolveTopologySeat, TopologySeatResolutionError } from "../domain/topology-seat-resolution.js";
+import type { RigRepository } from "../domain/rig-repository.js";
 
 interface ComposeBody {
   outRef?: string;
@@ -88,7 +90,8 @@ export function contextPacksRoutes(): Hono {
     }
     try {
       const topologyRoot = String(new SettingsStore().resolveOne("topology.root").value);
-      return c.json(writeSeatRecapAt({ topologyRoot, rig: body.rig, seat: body.seat, content: body.content }));
+      const rigRepo = c.get("rigRepo" as never) as RigRepository;
+      return c.json(writeSeatRecapAt({ db: rigRepo.db, topologyRoot, rig: body.rig, seat: body.seat, content: body.content }));
     } catch (err) {
       if (err instanceof RecapWriteError) return c.json({ error: "recap_write_refused", message: err.message }, 400);
       return c.json({ error: "recap_write_failed", message: (err as Error).message }, 500);
@@ -420,7 +423,20 @@ export function contextPacksRoutes(): Hono {
         return c.json({ error: "invalid_seat_params", message: "rig and seat must BOTH be single bounded segments ([A-Za-z0-9][A-Za-z0-9._-]{0,63})" }, 400);
       }
       const topologyRoot = String(new SettingsStore().resolveOne("topology.root").value);
-      roots.seat = join(topologyRoot, "rigs", rig, "seats", seat);
+      const rigRepo = c.get("rigRepo" as never) as RigRepository;
+      try {
+        const resolvedSeat = resolveTopologySeat(rigRepo.db, { topologyRoot, rigName: rig, seatRef: seat });
+        roots.seat = resolvedSeat.seatDir;
+        for (const orphan of listOrphanTopologySeatFolders(rigRepo.db, { topologyRoot, rigName: rig })) {
+          warnings.push(`Orphan seat folder '${orphan.name}' is not mapped to any registered seat in rig '${rig}'.`);
+        }
+      } catch (error) {
+        if (error instanceof TopologySeatResolutionError) {
+          const status = error.code === "seat_not_found" ? 404 : 400;
+          return c.json({ error: error.code, message: error.message, validSeatIds: error.validLogicalIds }, status);
+        }
+        throw error;
+      }
       contextAtoms.seat = [{
         id: "profile-seat-learned",
         address: "seat:LEARNED.md",

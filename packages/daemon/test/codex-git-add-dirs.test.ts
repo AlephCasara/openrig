@@ -11,6 +11,8 @@ import { prepareCodexSeatFolder } from "../src/domain/codex-team-workspace.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { resolveCodexGitAddDirs } from "../src/domain/codex-git-add-dirs.js";
 import { shellWords } from "../src/domain/seat-restart-in-place.js";
+import type Database from "better-sqlite3";
+import { createFullTestDb } from "./helpers/test-app.js";
 
 // Issue #121: in a linked git worktree `<cwd>/.git` is a FILE ("gitdir: ..."), so passing it to Codex as
 // `--add-dir` breaks the Linux sandbox for every command. These tests use real temporary Git repositories
@@ -22,8 +24,17 @@ const git = (cwd: string, ...args: string[]) =>
   });
 
 let root: string;
-beforeEach(() => { root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), "issue121-"))); });
-afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+let seatDb: Database.Database;
+beforeEach(() => {
+  root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), "issue121-")));
+  seatDb = createFullTestDb();
+  seatDb.prepare("INSERT INTO rigs (id, name) VALUES (?, ?)").run("seat-folder-rig", "my-rig");
+  seatDb.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES (?, ?, ?, ?)").run("seat-folder-node", "seat-folder-rig", "dev.qa", "codex");
+});
+afterEach(() => {
+  seatDb.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
 function ordinaryRepo(): string {
   const repo = nodePath.join(root, "main repo");
@@ -295,19 +306,20 @@ describe("Codex restore-path git add-dirs (a pod-less seat restored through Code
 });
 
 describe("prepareCodexSeatFolder", () => {
-  it("creates and returns exactly <topology root>/rigs/<rig>/seats/<seat>, and reuses it", () => {
+  it("creates the registered logical-id folder, accepts canonical and bare member refs, and reuses it", () => {
     const topology = nodePath.join(root, "topology");
-    const folder = nodePath.join(topology, "rigs", "my-rig", "seats", "dev-qa");
-    expect(prepareCodexSeatFolder("dev-qa@my-rig", topology)).toBe(folder);
+    const folder = nodePath.join(topology, "rigs", "my-rig", "seats", "dev.qa");
+    expect(prepareCodexSeatFolder("dev-qa@my-rig", topology, seatDb)).toBe(folder);
     expect(fs.statSync(folder).isDirectory()).toBe(true);
     fs.writeFileSync(nodePath.join(folder, "LEARNED.md"), "kept\n");
-    expect(prepareCodexSeatFolder("dev-qa@my-rig", topology)).toBe(folder);
+    expect(prepareCodexSeatFolder("dev-qa", topology, seatDb)).toBe(folder);
+    expect(prepareCodexSeatFolder("dev-qa@my-rig", topology, seatDb)).toBe(folder);
     expect(fs.readFileSync(nodePath.join(folder, "LEARNED.md"), "utf8")).toBe("kept\n");
   });
 
-  it.each(["dev-qa", "../escape@my-rig", ".hidden@my-rig", "dev qa@my-rig"])("gives none for %j and creates nothing", (name) => {
+  it.each(["../escape@my-rig", ".hidden@my-rig", "dev qa@my-rig"])("gives none for %j and creates nothing", (name) => {
     const topology = nodePath.join(root, "topology");
-    expect(prepareCodexSeatFolder(name, topology)).toBeUndefined();
+    expect(prepareCodexSeatFolder(name, topology, seatDb)).toBeUndefined();
     expect(fs.existsSync(topology)).toBe(false);
   });
 
@@ -319,7 +331,7 @@ describe("prepareCodexSeatFolder", () => {
     fs.symlinkSync(elsewhere, nodePath.join(topology, "rigs", "my-rig", "seats"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      expect(prepareCodexSeatFolder("dev-qa@my-rig", topology)).toBeUndefined();
+      expect(prepareCodexSeatFolder("dev-qa@my-rig", topology, seatDb)).toBeUndefined();
       expect(fs.readdirSync(elsewhere)).toEqual([]);
       expect(warn).toHaveBeenCalledOnce();
     } finally {
@@ -330,7 +342,7 @@ describe("prepareCodexSeatFolder", () => {
   it("gives none for a relative topology root", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      expect(prepareCodexSeatFolder("dev-qa@my-rig", "relative/topology")).toBeUndefined();
+      expect(prepareCodexSeatFolder("dev-qa@my-rig", "relative/topology", seatDb)).toBeUndefined();
     } finally {
       warn.mockRestore();
     }

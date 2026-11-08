@@ -682,6 +682,7 @@ Only Claude and Codex tenures can be woken.
 | `rig context preview <name-or-ref>` | — | `--json` |
 | `rig context get <name-or-ref>` | — | `--json` |
 | `rig context profile <name-or-ref>` | — | `--situation <situation>` **required**<br>`--runtime <runtime>`<br>`--profile <profile>`<br>`--budget <tokens>`<br>`--rig <rig>`<br>`--seat <seat>`<br>`--mission <mission>`<br>`--slice <slice>`<br>`--json` |
+| `rig context recap-age <seat>` | — | `--rig <rig>`<br>`--since <time-or-qitem>`<br>`--json` |
 | `rig context recap-write` | — | `--rig <rig>` **required**<br>`--seat <seat>` **required**<br>`--file <path>` **required** |
 | `rig context sync` | — | `--json` |
 | `rig context add <source>` | — | `--name <name>`<br>`--git`<br>`--checkout`<br>`--pack <path>`<br>`--json` |

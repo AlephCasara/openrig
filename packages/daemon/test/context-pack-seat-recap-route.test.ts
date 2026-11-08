@@ -7,23 +7,35 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { contextPacksRoutes } from "../src/routes/context-packs.js";
+import type Database from "better-sqlite3";
+import { createFullTestDb } from "./helpers/test-app.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
 
 describe("POST /api/context-packs/seat-recap", () => {
   let tmp: string;
   let saved: string | undefined;
-  const app = new Hono();
-  app.route("/api/context-packs", contextPacksRoutes());
+  let db: Database.Database;
+  let app: Hono;
   const write = (body: unknown) => app.request("/api/context-packs/seat-recap", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
 
   beforeEach(() => {
+    db = createFullTestDb();
+    db.prepare("INSERT INTO rigs (id, name) VALUES (?, ?)").run("recap-rig", "r1");
+    db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES (?, ?, ?, ?)").run("recap-s1", "recap-rig", "s1", "codex");
+    db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, ?)").run("recap-session-s1", "recap-s1", "s1@r1", "running");
+    const rigRepo = new RigRepository(db);
+    app = new Hono();
+    app.use("*", async (c, next) => { c.set("rigRepo" as never, rigRepo); await next(); });
+    app.route("/api/context-packs", contextPacksRoutes());
     tmp = mkdtempSync(join(tmpdir(), "seat-recap-route-"));
     saved = process.env["OPENRIG_TOPOLOGY_ROOT"];
     process.env["OPENRIG_TOPOLOGY_ROOT"] = join(tmp, "topology");
     mkdirSync(join(tmp, "topology", "rigs", "r1"), { recursive: true });
   });
   afterEach(() => {
+    db.close();
     if (saved === undefined) delete process.env["OPENRIG_TOPOLOGY_ROOT"];
     else process.env["OPENRIG_TOPOLOGY_ROOT"] = saved;
     rmSync(tmp, { recursive: true, force: true });

@@ -498,6 +498,7 @@ describe("SeatHandoverService source execution (OPR.0.5.5.5)", () => {
 // ── Fix round B3: the production chain includes the latest restore packet ──
 
 describe("buildRebuildPrimingChain (production resolver, OPR.0.5.5.5 fix B3)", () => {
+  let chainDb: Database.Database;
   let topologyRoot: string;
   let openrigHome: string;
   let seatDir: string;
@@ -508,12 +509,15 @@ describe("buildRebuildPrimingChain (production resolver, OPR.0.5.5.5 fix B3)", (
   }
 
   function chain(): Array<{ address: string; label: string }> {
-    const result = buildRebuildPrimingChain(SEAT, { topologyRoot, openrigHome });
+    const result = buildRebuildPrimingChain(SEAT, { topologyRoot, openrigHome, db: chainDb });
     if (!("artifacts" in result)) throw new Error(`expected artifacts, got: ${JSON.stringify(result)}`);
     return result.artifacts;
   }
 
   beforeEach(() => {
+    chainDb = createFullTestDb();
+    chainDb.prepare("INSERT INTO rigs (id, name) VALUES (?, ?)").run("chain-rig", "seat-rig");
+    chainDb.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES (?, ?, ?, ?)").run("chain-node", "chain-rig", "dev.impl", "codex");
     topologyRoot = mkdtempSync(join(tmpdir(), "s05b3-topo-"));
     openrigHome = mkdtempSync(join(tmpdir(), "s05b3-home-"));
     seatDir = join(topologyRoot, "rigs", "seat-rig", "seats", "dev-impl");
@@ -522,6 +526,7 @@ describe("buildRebuildPrimingChain (production resolver, OPR.0.5.5.5 fix B3)", (
   });
 
   afterEach(() => {
+    chainDb.close();
     rmSync(topologyRoot, { recursive: true, force: true });
     rmSync(openrigHome, { recursive: true, force: true });
   });
@@ -574,7 +579,7 @@ describe("buildRebuildPrimingChain (production resolver, OPR.0.5.5.5 fix B3)", (
   });
 
   it("an unparseable seat ref is a NAMED empty chain, never a guess", () => {
-    const result = buildRebuildPrimingChain("not a canonical ref", { topologyRoot, openrigHome });
-    expect(result).toMatchObject({ emptyReason: expect.stringContaining("did not parse as canonical") });
+    const result = buildRebuildPrimingChain("not a canonical ref", { topologyRoot, openrigHome, db: chainDb });
+    expect(result).toMatchObject({ emptyReason: expect.stringContaining("not registered") });
   });
 });
