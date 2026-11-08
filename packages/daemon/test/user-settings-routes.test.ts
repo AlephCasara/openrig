@@ -138,7 +138,10 @@ describe("config routes (User Settings v0)", () => {
     // + 1 acp.to (the ACP agent's receiver; default empty).
     // + 1 daemon.seat_poll_interval_ms (#2687 the seat pollers' cadence; startup-only, default 1000).
     // + 1 retention.events_days (the history-only event types of events; default 0 = keep).
-    expect(Object.keys(body.settings).length).toBe(100);
+    // + 2 queue.stuck_sweep_no_progress_*_minutes (role-specific report-only detection).
+    expect(Object.keys(body.settings).length).toBe(102);
+    expect(body.settings["queue.stuck_sweep_no_progress_orchestrator_minutes"]).toMatchObject({ value: 15, source: "default", defaultValue: 15 });
+    expect(body.settings["queue.stuck_sweep_no_progress_implementer_minutes"]).toMatchObject({ value: 30, source: "default", defaultValue: 30 });
     expect(body.settings["launch.codex_login_shell"]).toMatchObject({ value: false, source: "default", defaultValue: false });
     expect(body.settings["transport.draft_delivery"]).toMatchObject({ value: "deliver", source: "default", defaultValue: "deliver" });
     expect(body.settings["retention.events_days"]).toMatchObject({ value: 0, source: "default", defaultValue: 0 });
