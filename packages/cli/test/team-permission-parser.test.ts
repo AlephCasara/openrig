@@ -21,9 +21,9 @@ beforeAll(() => {
 afterAll(() => rmSync(home, { recursive: true, force: true }));
 
 async function parse(command: string) {
-  const shell = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", command], {
+  const shell = spawnSync("bash", ["--noprofile", "--norc", "-c", command], {
     encoding: "utf8", timeout: 3000,
-    env: { PATH: `${home}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home },
+    env: { PATH: `${home}:${dirname(process.execPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`, HOME: home },
   });
   expect(shell.status, shell.stderr).toBe(0);
   const program = createProgram(), calls: string[] = [];

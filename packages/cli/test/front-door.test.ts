@@ -6,7 +6,7 @@
 // behave unchanged. New file; shipped CLI floors untouched.
 import { describe, it, expect, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -448,15 +448,23 @@ describe("PUBLIC bin ownership (guard finding 1 — the wrapper is the real fron
     // A private server gives this test both a bounded IPC path and useful failure evidence.
     const socket = join(home, "tmux.sock");
     const exitFile = join(home, "child-exit");
+    const launcher = join(home, "launch.sh");
     const quote = (s: string) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
+    // tmux starts commands through the user's default shell, which may be fish.
+    // Run the exit-code capture through POSIX sh so `$?` has the same meaning on every host.
+    writeFileSync(launcher, [
+      `OPENRIG_HOME=${quote(home)} OPENRIG_URL=http://127.0.0.1:9 ${quote(process.execPath)} ${quote(binWrapper)}`,
+      `printf '%s' $? > ${quote(exitFile)}`,
+      "sleep 15",
+      "",
+    ].join("\n"));
     const tmux = (args: string[]) => spawnSync("tmux", ["-S", socket, ...args], { encoding: "utf-8", timeout: 10000 });
     const diagnostic = (r: ReturnType<typeof tmux>) => JSON.stringify({
       status: r.status, signal: r.signal, error: r.error?.message, stderr: r.stderr,
       childExit: existsSync(exitFile) ? readFileSync(exitFile, "utf8") : "still running or not started",
     });
     try {
-      const run = tmux(["new-session", "-d", "-s", session, "-x", "120", "-y", "30",
-        `OPENRIG_HOME=${quote(home)} OPENRIG_URL=http://127.0.0.1:9 ${quote(process.execPath)} ${quote(binWrapper)}; printf '%s' $? > ${quote(exitFile)}; sleep 15`]);
+      const run = tmux(["new-session", "-d", "-s", session, "-x", "120", "-y", "30", `sh ${quote(launcher)}`]);
       expect(run.status, diagnostic(run)).toBe(0);
       let text = "";
       for (let i = 0; i < 20 && !/EXPLORER|mission control could not start|Usage: rig/.test(text); i++) {

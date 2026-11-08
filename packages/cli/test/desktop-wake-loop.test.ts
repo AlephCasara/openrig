@@ -90,7 +90,7 @@ describe.skipIf(process.platform === "win32")("the skill's opt-in wake loop", ()
   /** Run the shipped loop as a background command would: its own process, this seat's identity, short timings. */
   function runLoop(max: number, seat: string | null = DESK) {
     const env: Record<string, string> = {
-      PATH: `${path.join(root, "bin")}:/usr/bin:/bin`, HOME: root, OPENRIG_HOME: path.join(root, "openrig"),
+      PATH: `${path.join(root, "bin")}:${process.env.PATH ?? "/usr/bin:/bin"}`, HOME: root, OPENRIG_HOME: path.join(root, "openrig"),
       OPENRIG_URL: url, MAX: String(max), EVERY: "1",
     };
     if (seat) env.OPENRIG_SESSION_NAME = seat;
