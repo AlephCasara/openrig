@@ -204,6 +204,7 @@ describe("issue #4 standing stuck sweep no-progress integration", () => {
       hookRawEvent: "PreToolUse",
       hookRawSubtype: "Bash",
       hookState: "running",
+      runningCommandProcessId: "102:Sun Nov  8 07:55:01 2026",
       codexWorkingElapsed: null,
     }) });
     await sweep(firstNow, detector);

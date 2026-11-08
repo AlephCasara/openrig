@@ -172,7 +172,8 @@ export function startStuckSweepScheduler(deps: {
   queueRepo?: import("./domain/queue-repository.js").QueueRepository;
   stuckSweepStatus?: import("./domain/queue-stuck-sweep.js").StuckSweepStatus;
   sessionRegistry?: Pick<import("./domain/session-registry.js").SessionRegistry, "findResumeContextByName" | "getBindingForNode">;
-  tmuxAdapter?: Pick<import("./adapters/tmux.js").TmuxAdapter, "capturePaneScreen">;
+  tmuxAdapter?: Pick<import("./adapters/tmux.js").TmuxAdapter, "capturePaneScreen">
+    & Partial<Pick<import("./adapters/tmux.js").TmuxAdapter, "getPanePid">>;
   contextUsageStore?: Pick<import("./domain/context-usage-store.js").ContextUsageStore, "readSidecar" | "readCodexTranscriptPath">;
   agentActivityStore?: Pick<import("./domain/agent-activity-store.js").AgentActivityStore, "getLatestForNode">;
 }): ReturnType<typeof setInterval> | null {

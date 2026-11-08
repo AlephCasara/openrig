@@ -6,10 +6,12 @@ import { join } from "node:path";
 import {
   createQueueNoProgressDetector,
   createRuntimeQueueNoProgressDetector,
+  foregroundCommandWitness,
   normalizePaneForNoProgress,
   readCodexTurnFailure,
   type NoProgressSample,
 } from "../src/domain/queue-no-progress.js";
+import type { NativeProcessRow } from "../src/domain/native-process-lineage.js";
 
 const BASE = Date.parse("2026-11-08T08:00:00.000Z");
 
@@ -233,11 +235,12 @@ describe("queue no-progress detector", () => {
       .toMatchObject({ state: "finding", diagnosis: "unknown" });
   });
 
-  it("suppresses a long silent foreground command until the row deadline, then reports it", async () => {
+  it("suppresses a verified silent command until the row deadline, then reports it", async () => {
     const read = vi.fn(async () => sample({
       hookRawEvent: "PreToolUse",
       hookRawSubtype: "Bash",
       hookState: "running",
+      runningCommandProcessId: "102:Sun Nov  8 07:55:01 2026",
       codexWorkingElapsed: null,
     }));
     const detector = createQueueNoProgressDetector({ sample: read });
@@ -249,7 +252,7 @@ describe("queue no-progress detector", () => {
       .toMatchObject({ state: "finding", diagnosis: "running-command" });
   });
 
-  it("does not suppress an ancient PreToolUse forever when no deadline exists", async () => {
+  it("does not suppress an unwitnessed or ancient PreToolUse", async () => {
     const detector = createQueueNoProgressDetector({ sample: async () => sample({
       hookRawEvent: "PreToolUse",
       hookRawSubtype: "Bash",
@@ -259,9 +262,41 @@ describe("queue no-progress detector", () => {
     }) });
     await detector.inspect(input(BASE));
     expect(await detector.inspect(input(BASE + 10 * 60_000)))
-      .toMatchObject({ state: "inconclusive", reason: "running_command_before_deadline" });
-    expect(await detector.inspect(input(BASE + 50 * 60_000)))
       .toMatchObject({ state: "finding", diagnosis: "unknown" });
+  });
+
+  it("does not treat a replaced command process as continuous command execution", async () => {
+    const detector = createQueueNoProgressDetector({ sample: vi.fn()
+      .mockResolvedValueOnce(sample({ hookRawEvent: "PreToolUse", hookRawSubtype: "Exec", runningCommandProcessId: "102:old" }))
+      .mockResolvedValueOnce(sample({ hookRawEvent: "PreToolUse", hookRawSubtype: "Exec", runningCommandProcessId: "103:new" })) });
+    await detector.inspect(input(BASE));
+    expect(await detector.inspect(input(BASE + 10 * 60_000, { closureRequiredAt: "2026-11-08T09:00:00.000Z" })))
+      .toMatchObject({ state: "finding", diagnosis: "unknown" });
+  });
+
+  it("requires a command child of the verified foreground runtime, started after the hook", () => {
+    const process = (pid: number, ppid: number, pgid: number, tpgid: number, startedAt: string, executableName: string): NativeProcessRow => ({
+      pid, ppid, pgid, tpgid, startedAt, executableName, command: executableName,
+    });
+    const pane = process(100, 1, 100, 100, "Sun Nov  8 07:00:00 2026", "bash");
+    const codex = process(101, 100, 100, 100, "Sun Nov  8 07:30:00 2026", "codex");
+    const tool = process(102, 101, 100, 100, "Sun Nov  8 07:55:01 2026", "python");
+    const mcp = process(103, 101, 103, 100, "Sun Nov  8 07:55:01 2026", "node");
+    const detached = process(104, 101, 104, -1, "Sun Nov  8 07:55:01 2026", "bash");
+    const unrelated = process(105, 1, 100, 100, "Sun Nov  8 07:55:01 2026", "sleep");
+    const stale = process(106, 101, 100, 100, "Sun Nov  8 07:40:00 2026", "node");
+    // ps lstart uses the machine's local timezone; hooks use UTC timestamps.
+    const eventAt = new Date("Sun Nov  8 07:55:00 2026").toISOString();
+    expect(foregroundCommandWitness([pane, codex, tool, mcp, detached, unrelated, stale], 100, 101, eventAt))
+      .toBe("102:Sun Nov  8 07:55:01 2026");
+    expect(foregroundCommandWitness([pane, codex, mcp, detached, unrelated, stale], 100, 101, eventAt)).toBeNull();
+    expect(foregroundCommandWitness([pane, codex, stale], 100, 101, eventAt)).toBeNull();
+    expect(foregroundCommandWitness([pane, codex, tool, { ...tool, pid: 107 }], 100, 101, eventAt)).toBeNull();
+    expect(foregroundCommandWitness([pane, codex, tool], 100, 101,
+      new Date("Sun Nov  8 08:00:00 2026").toISOString())).toBeNull();
+    expect(foregroundCommandWitness([pane, { ...codex, startedAt: "Sun Nov  8 07:57:00 2026" }, tool],
+      100, 101, eventAt)).toBeNull();
+    expect(foregroundCommandWitness([pane, codex, { ...tool, startedAt: "bad timestamp" }], 100, 101, eventAt)).toBeNull();
   });
 
   it("never attributes mismatched-generation hook events to the current occupant", async () => {
@@ -328,6 +363,60 @@ describe("queue no-progress detector", () => {
     expect(detector.observationCount()).toBe(1);
     detector.retainOnly([]);
     expect(detector.observationCount()).toBe(0);
+  });
+
+  it("witnesses the bound native Codex command across samples, but not a surviving MCP sidecar", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "openrig-command-witness-"));
+    const rollout = join(directory, "rollout.jsonl");
+    const db = new Database(":memory:");
+    db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, resume_token TEXT)");
+    db.prepare("INSERT INTO sessions (id, resume_token) VALUES (?, ?)").run("session-1", "thread-1");
+    writeFileSync(rollout, '{"type":"event_msg"}\n');
+    const row = (pid: number, ppid: number, pgid: number, tpgid: number, startedAt: string,
+      executableName: string, command: string, argv?: string[]): NativeProcessRow => ({
+      pid, ppid, pgid, tpgid, startedAt, executableName, command, ...(argv ? { argv } : {}),
+    });
+    const pane = row(100, 1, 100, 100, "Sun Nov  8 07:00:00 2026", "bash", "bash");
+    const codex = row(101, 100, 100, 100, "Sun Nov  8 07:30:00 2026", "codex", "codex resume thread-1",
+      ["codex", "resume", "thread-1"]);
+    const command = row(102, 101, 100, 100, "Sun Nov  8 07:55:01 2026", "python", "python worker.py");
+    const sidecar = row(103, 101, 103, 100, "Sun Nov  8 07:55:01 2026", "node", "node ./mcp/server.mjs");
+    let toolAlive = true;
+    const listProcesses = vi.fn(async () => [pane, codex, sidecar, ...(toolAlive ? [command] : [])]);
+    const startedAt = new Date("Sun Nov  8 08:30:00 2026").getTime();
+    const hookEventAt = new Date("Sun Nov  8 07:55:00 2026").toISOString();
+    const lastMeaningfulAt = new Date("Sun Nov  8 07:30:00 2026").toISOString();
+    try {
+      const detector = createRuntimeQueueNoProgressDetector({
+        db,
+        sessionRegistry: {
+          findResumeContextByName: () => ({ sessionId: "session-1", nodeId: "node-1", runtime: "codex" }),
+          getBindingForNode: () => ({ tmuxPane: "%12" }),
+        },
+        tmuxAdapter: { capturePaneScreen: async () => "• Working (23s • esc to interrupt)", getPanePid: async () => 100 },
+        listProcesses,
+        contextUsageStore: {
+          readSidecar: () => ({ ok: false as const, reason: "not_claude" }),
+          readCodexTranscriptPath: () => rollout,
+        },
+        agentActivityStore: { getLatestForNode: () => ({
+          state: "running", eventAt: hookEventAt, rawEvent: "PreToolUse", rawSubtype: "Bash", sourceSequence: 7,
+        }) },
+      });
+      const check = (ms: number) => input(ms, {
+        lastMeaningfulAt, closureRequiredAt: new Date(startedAt + 60 * 60_000).toISOString(),
+      });
+      expect(await detector.inspect(check(startedAt))).toMatchObject({ state: "inconclusive", reason: "first_sample" });
+      expect(await detector.inspect(check(startedAt + 10 * 60_000)))
+        .toMatchObject({ state: "inconclusive", reason: "running_command_before_deadline" });
+      toolAlive = false;
+      expect(await detector.inspect(check(startedAt + 20 * 60_000)))
+        .toMatchObject({ state: "finding", diagnosis: "unknown" });
+      expect(listProcesses).toHaveBeenCalledTimes(3);
+    } finally {
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("samples the bound Codex pane and real rollout file, then recognizes resumed transcript growth", async () => {

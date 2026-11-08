@@ -6,6 +6,13 @@ import {
   type PaneActivityClassification,
 } from "./session-transport.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
+import {
+  listNativeProcesses,
+  observeClaudePaneProcess,
+  observeCodexPaneProcess,
+  type NativeProcessLister,
+  type NativeProcessRow,
+} from "./native-process-lineage.js";
 
 export const STUCK_SWEEP_NO_PROGRESS_ORCHESTRATOR_KEY = "queue.stuck_sweep_no_progress_orchestrator_minutes";
 export const STUCK_SWEEP_NO_PROGRESS_IMPLEMENTER_KEY = "queue.stuck_sweep_no_progress_implementer_minutes";
@@ -36,6 +43,8 @@ export interface NoProgressSample {
   /** A stale hook may be retained for a *different* occupant generation. */
   hookStale?: boolean | null;
   hookReason?: string | null;
+  /** PID and OS start time of a verified, foreground shell-command child. */
+  runningCommandProcessId?: string | null;
   codexWorkingElapsed: number | null;
   /** Latest native Codex turn ended unsuccessfully after this row's progress anchor. */
   codexTurnFailure?: "failed" | "aborted" | null;
@@ -134,7 +143,53 @@ function hookBelongsToCurrentOccupant(sample: NoProgressSample): boolean {
 function isRunningCommand(sample: NoProgressSample): boolean {
   if (!hookBelongsToCurrentOccupant(sample)) return false;
   if (sample.hookRawEvent !== "PreToolUse") return false;
-  return /^(?:bash|shell|sh|command|exec|terminal|powershell)$/i.test(sample.hookRawSubtype ?? "");
+  return /^(?:bash|shell|sh|command|exec|terminal|powershell)$/i.test(sample.hookRawSubtype ?? "")
+    && !!sample.runningCommandProcessId;
+}
+
+/**
+ * A hook is historical until the OS also witnesses a foreground command. Require
+ * the command's direct child of the bound runtime to have started at the hook,
+ * in the runtime's foreground process group. This refuses long-lived MCP helpers,
+ * unrelated descendants and background process groups. Ambiguity stays unknown.
+ * The detector also requires the *same* PID/start time across its two samples.
+ */
+export function foregroundCommandWitness(
+  rows: NativeProcessRow[], panePid: number, runtimePid: number, hookEventAt: string,
+): string | null {
+  const hookMs = Date.parse(hookEventAt);
+  if (!Number.isFinite(hookMs)) return null;
+  const byPid = new Map(rows.map(row => [row.pid, row]));
+  const pane = byPid.get(panePid);
+  const runtime = byPid.get(runtimePid);
+  const runtimeStartedMs = Date.parse(runtime?.startedAt ?? "");
+  if (byPid.size !== rows.length || !pane?.startedAt || !runtime?.startedAt
+    || !Number.isFinite(runtimeStartedMs) || runtimeStartedMs > hookMs + 1_000
+    || !pane.tpgid || pane.tpgid <= 0 || runtime.pgid !== pane.tpgid || runtime.tpgid !== pane.tpgid) return null;
+
+  const roots = new Map<number, NativeProcessRow>();
+  for (const row of rows) {
+    if (row.pid === runtimePid || row.pgid !== runtime.pgid || row.tpgid !== pane.tpgid || !row.startedAt) continue;
+    const visited = new Set<number>([row.pid]);
+    let current = row;
+    let root: NativeProcessRow | null = null;
+    while (!visited.has(current.ppid)) {
+      visited.add(current.ppid);
+      const parent = byPid.get(current.ppid);
+      if (!parent?.startedAt) break;
+      if (parent.pid === runtimePid) { root = current; break; }
+      current = parent;
+    }
+    if (!root?.startedAt) continue;
+    const startedMs = Date.parse(root.startedAt);
+    // ps lstart has one-second precision. Allow only that rounding error.
+    if (!Number.isFinite(startedMs) || startedMs < hookMs - 1_000) continue;
+    if (/^(?:codex|claude|\.claude-(?:un)?wrapped)$/i.test(root.executableName ?? "")) continue;
+    roots.set(root.pid, root);
+  }
+  if (roots.size !== 1) return null;
+  const root = [...roots.values()][0]!;
+  return `${root.pid}:${root.startedAt}`;
 }
 
 function isFailedOrAbortedTurn(sample: NoProgressSample): boolean {
@@ -263,6 +318,10 @@ export function createQueueNoProgressDetector(deps: {
       }
 
       let diagnosis = classifyNoProgress(current);
+      if (diagnosis === "running-command"
+        && previous.sample.runningCommandProcessId !== current.runningCommandProcessId) {
+        diagnosis = "unknown";
+      }
       if (diagnosis === "running-command") {
         const deadlineMs = Date.parse(input.closureRequiredAt ?? "");
         if (Number.isFinite(deadlineMs) && input.now.getTime() < deadlineMs) {
@@ -336,7 +395,9 @@ export function createRuntimeQueueNoProgressDetector(deps: {
   };
   tmuxAdapter: {
     capturePaneScreen(target: string): Promise<string | null>;
+    getPanePid?(target: string): Promise<number | null>;
   };
+  listProcesses?: NativeProcessLister;
   contextUsageStore: {
     readSidecar(sessionName: string): { ok: true; data: { transcript_path?: string | null } } | { ok: false; reason: string };
     readCodexTranscriptPath(threadId: string): string | null;
@@ -408,6 +469,31 @@ export function createRuntimeQueueNoProgressDetector(deps: {
         currentClaudeDialogueOnly: true,
       });
 
+      let runningCommandProcessId: string | null = null;
+      if (deps.tmuxAdapter.getPanePid && rowActivity?.rawEvent === "PreToolUse"
+        && /^(?:bash|shell|sh|command|exec|terminal|powershell)$/i.test(rowActivity.rawSubtype ?? "")
+        && (rowActivity.stale !== true || rowActivity.reason === "stale_runtime_hook")) {
+        try {
+          const panePid = await deps.tmuxAdapter.getPanePid(target);
+          if (panePid) {
+            const processes = await (deps.listProcesses ?? listNativeProcesses)();
+            const tmux = { getPanePid: async () => panePid };
+            const session = deps.db.prepare("SELECT resume_token FROM sessions WHERE id = ?")
+              .get(context.sessionId) as { resume_token: string | null } | undefined;
+            const native = context.runtime === "codex"
+              ? await observeCodexPaneProcess({ target, tmux, listProcesses: () => processes,
+                  expectedToken: session?.resume_token, requireArgv: true })
+              : await observeClaudePaneProcess({ target, tmux, listProcesses: () => processes,
+                  expectedToken: session?.resume_token });
+            if (native && rowActivity.eventAt) {
+              runningCommandProcessId = foregroundCommandWitness(processes, panePid, native.process.pid, rowActivity.eventAt);
+            }
+          }
+        } catch {
+          // OS evidence may be unavailable. A hook alone never proves a live command.
+        }
+      }
+
       return {
         runtime: context.runtime,
         rawPane,
@@ -424,6 +510,7 @@ export function createRuntimeQueueNoProgressDetector(deps: {
         hookState: rowActivity?.state ?? null,
         hookStale: rowActivity?.stale ?? null,
         hookReason: rowActivity?.reason ?? null,
+        runningCommandProcessId,
         codexWorkingElapsed: context.runtime === "codex" ? codexWorkingElapsed(rawPane) : null,
         codexTurnFailure,
       };
