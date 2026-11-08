@@ -56,21 +56,25 @@ describe("queue no-progress detector", () => {
 
   it("ignores Claude's volatile token counters and creative status verbs", () => {
     const a = normalizePaneForNoProgress("✻ Onioning… (2m 38s · ↓ 10.9k tokens · thought for 8s)\n❯ ");
-    const b = normalizePaneForNoProgress("✻ Onioning… (2m 39s · ↓ 11.2k tokens · thought for 9s)\n❯ ");
+    const b = normalizePaneForNoProgress("✶ Onioning… (2m 39s · ↓ 11.2k tokens · thought for 9s)\n❯ ");
     expect(a).toBe(b);
+    expect(normalizePaneForNoProgress("✢ Thinking… (3m 00s · ↓ 12.1k tokens)"))
+      .toBe(normalizePaneForNoProgress("✳ Thinking… (3m 01s · ↓ 12.2k tokens)"));
     expect(normalizePaneForNoProgress("✶ Synthesizing… (6s · ↑ 284 tokens · thinking)"))
       .toBe(normalizePaneForNoProgress("✶ Synthesizing… (7s · ↑ 321 tokens · thinking)"));
     expect(normalizePaneForNoProgress("✢ Reading source A… (6s · ↑ 284 tokens)"))
       .not.toBe(normalizePaneForNoProgress("✢ Reading source B… (7s · ↑ 321 tokens)"));
+    expect(normalizePaneForNoProgress("* Read task list (2m 00s)"))
+      .toBe("* Read task list (2m 00s)");
   });
 
   it("does not count Claude status token churn as runtime progress", async () => {
-    const pane = (clock: string, tokens: string) => `✻ Thinking… (${clock} · ↓ ${tokens} tokens · thought for 8s)\n❯ `;
+    const pane = (glyph: string, clock: string, tokens: string) => `${glyph} Thinking… (${clock} · ↓ ${tokens} tokens · thought for 8s)\n❯ `;
     const detector = createQueueNoProgressDetector({ sample: vi.fn()
-      .mockResolvedValueOnce(sample({ runtime: "claude-code", rawPane: pane("1m 00s", "10.9k"),
-        normalizedPane: normalizePaneForNoProgress(pane("1m 00s", "10.9k")) }))
-      .mockResolvedValueOnce(sample({ runtime: "claude-code", rawPane: pane("1m 01s", "11.2k"),
-        normalizedPane: normalizePaneForNoProgress(pane("1m 01s", "11.2k")) })),
+      .mockResolvedValueOnce(sample({ runtime: "claude-code", rawPane: pane("✻", "1m 00s", "10.9k"),
+        normalizedPane: normalizePaneForNoProgress(pane("✻", "1m 00s", "10.9k")) }))
+      .mockResolvedValueOnce(sample({ runtime: "claude-code", rawPane: pane("✶", "1m 01s", "11.2k"),
+        normalizedPane: normalizePaneForNoProgress(pane("✶", "1m 01s", "11.2k")) })),
     });
     await detector.inspect(input(BASE));
     expect(await detector.inspect(input(BASE + 10 * 60_000)))
@@ -360,6 +364,44 @@ describe("queue no-progress detector", () => {
       expect(readCodexTranscriptPath).toHaveBeenCalledWith("thread-1");
 
       appendFileSync(rollout, '{"type":"response_item"}\n');
+      expect(await detector.inspect(input(BASE + 11 * 60_000))).toMatchObject({
+        state: "healthy", reason: "runtime_progress",
+      });
+    } finally {
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("samples Claude's sidecar transcript while animated status changes, then recognizes new output", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "openrig-no-progress-claude-"));
+    const transcript = join(directory, "claude-session.jsonl");
+    const db = new Database(":memory:");
+    writeFileSync(transcript, '{"type":"user"}\n');
+    const capturePaneScreen = vi.fn()
+      .mockResolvedValueOnce("✻ Thinking… (1m 00s · ↓ 10.9k tokens)\n❯ ")
+      .mockResolvedValueOnce("✶ Thinking… (1m 01s · ↓ 11.2k tokens)\n❯ ")
+      .mockResolvedValueOnce("✢ Thinking… (1m 02s · ↓ 11.5k tokens)\n❯ ");
+    const readSidecar = vi.fn(() => ({ ok: true as const, data: { transcript_path: transcript } }));
+    try {
+      const detector = createRuntimeQueueNoProgressDetector({
+        db,
+        sessionRegistry: {
+          findResumeContextByName: () => ({ sessionId: "session-claude", nodeId: "node-claude", runtime: "claude-code" }),
+          getBindingForNode: () => ({ tmuxPane: "%14" }),
+        },
+        tmuxAdapter: { capturePaneScreen },
+        contextUsageStore: { readSidecar, readCodexTranscriptPath: () => null },
+      });
+
+      expect(await detector.inspect(input(BASE))).toMatchObject({ state: "inconclusive", reason: "first_sample" });
+      expect(await detector.inspect(input(BASE + 10 * 60_000))).toMatchObject({
+        state: "finding", diagnosis: "unknown",
+      });
+      expect(readSidecar).toHaveBeenCalledWith("dev-impl@rig");
+      expect(capturePaneScreen).toHaveBeenCalledWith("%14");
+
+      appendFileSync(transcript, '{"type":"assistant","message":{"id":"msg-2"}}\n');
       expect(await detector.inspect(input(BASE + 11 * 60_000))).toMatchObject({
         state: "healthy", reason: "runtime_progress",
       });

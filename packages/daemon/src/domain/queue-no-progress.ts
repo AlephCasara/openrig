@@ -83,6 +83,9 @@ export function normalizePaneForNoProgress(pane: string): string {
       let next = line.replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g, "⠿");
       if (statusLike(next)) {
         next = next
+          // Claude rotates its live status glyph independently of actual work.
+          // Normalize only the shaped status prefix, not symbols in output.
+          .replace(/^[✶✢✳✻✽·*](?=\s+\S.*(?:…|\.{3})\s+\()/u, "<spinner>")
           .replace(/\b(?:\d+h\s*)?(?:\d+m\s*)?\d+s\b/g, "<elapsed>")
           .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, "<clock>")
           // Claude redraws status token counters as it thinks. The counters
