@@ -32,6 +32,8 @@ export interface NoProgressSample {
   normalizedPane: string;
   paneState: PaneActivityClassification["state"];
   paneReason: string;
+  /** Live activity evidence selected by the pane classifier, rather than historical screen text. */
+  paneEvidence?: string | null;
   transcriptPath: string | null;
   transcriptSize: number | null;
   transcriptMtimeMs: number | null;
@@ -116,9 +118,14 @@ function completeRuntimeSignal(sample: NoProgressSample): boolean {
     && sample.normalizedPane.length > 0;
 }
 
-function hookSignature(sample: NoProgressSample): string {
-  // Events from another occupant must not reset the stall clock when they churn.
-  if (!hookBelongsToCurrentOccupant(sample)) return "unbound";
+function hookProgressSignature(sample: NoProgressSample): string | null {
+  // A notification or a heartbeat may change the hook's timestamp/sequence
+  // indefinitely while the seat has made no progress on its obligation.
+  // Only the runtime's concrete turn/tool/subagent transitions demonstrate work.
+  if (!hookBelongsToCurrentOccupant(sample)) return null;
+  if (!/^(?:UserPromptSubmit|PreToolUse|PostToolUse|PostToolUseFailure|Stop|SubagentStart|SubagentStop|PostCompact)$/.test(sample.hookRawEvent ?? "")) {
+    return null;
+  }
   return JSON.stringify([
     sample.hookEventAt,
     sample.hookSourceSequence,
@@ -130,7 +137,8 @@ function hookSignature(sample: NoProgressSample): string {
 function runtimeMoved(before: NoProgressSample, after: NoProgressSample): boolean {
   if (before.transcriptPath !== after.transcriptPath) return true;
   if (before.transcriptSize !== after.transcriptSize || before.transcriptMtimeMs !== after.transcriptMtimeMs) return true;
-  if (hookSignature(before) !== hookSignature(after)) return true;
+  const currentHookProgress = hookProgressSignature(after);
+  if (currentHookProgress !== null && currentHookProgress !== hookProgressSignature(before)) return true;
   return before.normalizedPane !== after.normalizedPane;
 }
 
@@ -200,13 +208,11 @@ function isFailedOrAbortedTurn(sample: NoProgressSample): boolean {
   return /(?:^|[_:-])(?:failed|aborted)(?:$|[_:-])/i.test(subtype);
 }
 
-/** Keep diagnostic text from older turns in the pane from masquerading as active compaction. */
+/** Only the activity selected by the pane classifier can establish live compaction.
+ * The rest of the terminal contains earlier turns and quoted diagnostics. */
 function isActivelyCompacting(sample: NoProgressSample): boolean {
   if (sample.paneState !== "agent_active") return false;
-  const statuses = sample.rawPane.split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => /^(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✻•]\s*)?(?:compacting|working|thinking)\b/i.test(line));
-  return /^\s*(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✻•]\s*)?compacting\b/i.test(statuses.at(-1) ?? "");
+  return /^\s*(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✻•]\s*)?compacting\b/i.test(sample.paneEvidence ?? "");
 }
 
 export function classifyNoProgress(sample: NoProgressSample): NoProgressDiagnosis {
@@ -500,6 +506,7 @@ export function createRuntimeQueueNoProgressDetector(deps: {
         normalizedPane: normalizePaneForNoProgress(rawPane),
         paneState: pane.state,
         paneReason: pane.reason,
+        paneEvidence: pane.evidence,
         transcriptPath,
         transcriptSize,
         transcriptMtimeMs,

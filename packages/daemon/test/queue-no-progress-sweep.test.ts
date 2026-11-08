@@ -12,6 +12,7 @@ import {
   type QueueNoProgressDetector,
 } from "../src/domain/queue-no-progress.js";
 import { findingDedupTag, runStuckSweep } from "../src/domain/queue-stuck-sweep.js";
+import { classifyPaneActivity } from "../src/domain/session-transport.js";
 
 const WINDOW_MINUTES = 20;
 
@@ -23,6 +24,9 @@ function frozenSample(overrides: Partial<NoProgressSample> = {}): NoProgressSamp
     normalizedPane: normalizePaneForNoProgress(rawPane),
     paneState: "agent_active",
     paneReason: "mid_work",
+    paneEvidence: classifyPaneActivity(rawPane, {
+      runtime: "codex", timerlessStatusIsLive: true, currentClaudeDialogueOnly: true,
+    }).evidence,
     transcriptPath: "/tmp/frozen-rollout.jsonl",
     transcriptSize: 100,
     transcriptMtimeMs: 1_000,

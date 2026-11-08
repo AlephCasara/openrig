@@ -12,11 +12,12 @@ import {
   type NoProgressSample,
 } from "../src/domain/queue-no-progress.js";
 import type { NativeProcessRow } from "../src/domain/native-process-lineage.js";
+import { classifyPaneActivity } from "../src/domain/session-transport.js";
 
 const BASE = Date.parse("2026-11-08T08:00:00.000Z");
 
 function sample(overrides: Partial<NoProgressSample> = {}): NoProgressSample {
-  return {
+  const result: NoProgressSample = {
     runtime: "codex",
     rawPane: "• Working (23s • esc to interrupt)\n› Ask Codex to do anything",
     normalizedPane: normalizePaneForNoProgress("• Working (23s • esc to interrupt)\n› Ask Codex to do anything"),
@@ -33,6 +34,14 @@ function sample(overrides: Partial<NoProgressSample> = {}): NoProgressSample {
     codexWorkingElapsed: 23,
     ...overrides,
   };
+  if (!("paneEvidence" in overrides)) {
+    result.paneEvidence = classifyPaneActivity(result.rawPane, {
+      runtime: result.runtime,
+      timerlessStatusIsLive: true,
+      currentClaudeDialogueOnly: true,
+    }).evidence;
+  }
+  return result;
 }
 
 function input(nowMs: number, extra: Record<string, unknown> = {}) {
@@ -118,6 +127,42 @@ describe("queue no-progress detector", () => {
       .toMatchObject({ state: "finding", diagnosis: "unknown" });
   });
 
+  it("does not reset the no-progress window for notifications or heartbeat hooks", async () => {
+    for (const [firstEvent, nextEvent] of [
+      ["Notification", "Notification"],
+      ["PreToolUse", "Notification"],
+      ["active", "active"],
+      ["SessionStart", "SessionStart"],
+    ]) {
+      const detector = createQueueNoProgressDetector({ sample: vi.fn()
+        .mockResolvedValueOnce(sample({ hookRawEvent: firstEvent, hookSourceSequence: 7 }))
+        .mockResolvedValueOnce(sample({
+          hookRawEvent: nextEvent,
+          hookSourceSequence: 9,
+          hookEventAt: "2026-11-08T08:04:00.000Z",
+        })),
+      });
+      await detector.inspect(input(BASE));
+      expect(await detector.inspect(input(BASE + 10 * 60_000)))
+        .toMatchObject({ state: "finding", diagnosis: "unknown" });
+    }
+  });
+
+  it("counts a new concrete tool lifecycle event despite unchanged transcript", async () => {
+    const detector = createQueueNoProgressDetector({ sample: vi.fn()
+      .mockResolvedValueOnce(sample({ hookRawEvent: "Notification" }))
+      .mockResolvedValueOnce(sample({
+        hookRawEvent: "PostToolUse",
+        hookRawSubtype: "Read",
+        hookSourceSequence: 8,
+        hookEventAt: "2026-11-08T08:03:00.000Z",
+      })),
+    });
+    await detector.inspect(input(BASE));
+    expect(await detector.inspect(input(BASE + 10 * 60_000)))
+      .toMatchObject({ state: "healthy", reason: "runtime_progress" });
+  });
+
   it("does not mistake an advancing Codex working clock for progress", async () => {
     const read = vi.fn()
       .mockResolvedValueOnce(sample({ codexWorkingElapsed: 23 }))
@@ -178,6 +223,17 @@ describe("queue no-progress detector", () => {
 
   it("ignores completed historical compaction text when current status is working", async () => {
     const pane = "✻ Compacting conversation…\nCompaction complete\n• Working (23s • esc to interrupt)";
+    const detector = createQueueNoProgressDetector({ sample: async () => sample({
+      rawPane: pane,
+      normalizedPane: normalizePaneForNoProgress(pane),
+    }) });
+    await detector.inspect(input(BASE));
+    expect(await detector.inspect(input(BASE + 10 * 60_000)))
+      .toMatchObject({ state: "finding", diagnosis: "unknown" });
+  });
+
+  it("does not classify quoted or archived compaction below the live Working row", async () => {
+    const pane = "• Working (33s • esc to interrupt)\n• Compacting context (old log)\n› Ask Codex to do anything";
     const detector = createQueueNoProgressDetector({ sample: async () => sample({
       rawPane: pane,
       normalizedPane: normalizePaneForNoProgress(pane),
