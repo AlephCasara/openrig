@@ -74,12 +74,12 @@ export function telemetryCommand(depsOverride?: StatusDeps): Command {
         .option("--limit <n>", "Source-row cap, at most 128")
         .option("--json", "Return the complete versioned page and coverage envelope");
     paging(command.command("events").description("Event metadata only; no payload content"))
-        .option("--start <mode>", "latest (default) or retained, for a new window")
+        .option("--start <mode>", "latest (default), retained, or recent, for a new window")
         .option("--node <id>", "Filter the bounded source page by immutable node ID")
         .option("--rig <id>", "Filter the bounded source page by immutable rig ID")
         .action((opts: ReadOptions) => read("events", opts));
     paging(command.command("transitions").description("Active and archived queue-transition metadata"))
-        .option("--start <mode>", "latest (default) or retained, for a new window")
+        .option("--start <mode>", "latest (default), retained, or recent, for a new window")
         .option("--qitem <id>", "Filter the bounded source page by exact queue item ID")
         .action((opts: ReadOptions) => read("queue-transitions", opts));
     paging(command.command("tenures").argument("<node-id>").description("Newest retained occupant tenures for one immutable node (default 32)"))

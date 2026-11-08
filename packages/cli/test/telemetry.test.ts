@@ -43,6 +43,18 @@ const envelope = {
     coverage: { status: "partial", historyCompleteness: "unknown", gaps: [{ code: "retained_sequence_gap" }], gapCount: 1 },
 };
 describe("rig telemetry", () => {
+    it("advertises recent as a supported new-window mode for events and transitions", () => {
+        const command = telemetryCommand({} as StatusDeps);
+        for (const name of ["events", "transitions"]) {
+            const subcommand = command.commands.find((entry) => entry.name() === name);
+            expect(subcommand?.helpInformation()).toContain("latest (default), retained, or recent");
+        }
+    });
+    it("forwards recent for a one-shot events read", async () => {
+        const result = await run(["events", "--start", "recent", "--limit", "16", "--json"], async () => ({ status: 200, data: envelope }));
+        expect(result.paths).toEqual(["/api/telemetry/v1/events?start=recent&limit=16"]);
+        expect(result.exit).toBeUndefined();
+    });
     it("passes filters and cursor to one read and preserves the complete JSON envelope", async () => {
         const result = await run(["events", "--cursor", "cursor-token", "--limit", "17", "--node", "node-a", "--rig", "rig-a", "--json"], async () => ({ status: 200, data: envelope }));
         expect(result.paths).toHaveLength(1);

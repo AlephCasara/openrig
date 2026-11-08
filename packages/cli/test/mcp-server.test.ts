@@ -93,6 +93,18 @@ describe("MCP Server", () => {
     await cleanup();
   });
 
+  it("rig_telemetry_events accepts recent and forwards the one-shot start mode", async () => {
+    const getFn = vi.fn(async (path: string) => ({ status: 200, data: { path } }));
+    await setup({ get: getFn });
+    const result = await mcpClient.callTool({ name: "rig_telemetry_events", arguments: { start: "recent", limit: 16 } });
+    expect(result.isError).toBeFalsy();
+    expect(getFn).toHaveBeenCalledWith("/api/telemetry/v1/events?start=recent&limit=16");
+    const listed = await mcpClient.listTools();
+    const tool = listed.tools.find((entry) => entry.name === "rig_telemetry_events");
+    expect(tool?.description).toContain("recent returns the newest bounded retained tail once");
+    await cleanup();
+  });
+
   // rig_add: posts the member fragment to the pod-members route.
   it("rig_add posts to the pod-members route and returns the added node", async () => {
     const postFn = vi.fn(async () => ({

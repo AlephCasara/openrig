@@ -1442,10 +1442,10 @@ export function createMcpServer(client: DaemonClient, options: { seat?: string; 
   if (offered("rig_telemetry_events")) server.registerTool(
     "rig_telemetry_events",
     {
-      description: "Read one bounded page of event metadata: seq, rig, node, type and time, never payloads. Without a cursor it starts at the newest event and returns no rows; start retained reads the retained past instead. Continue with page.nextCursor and the same filters. coverage.gaps names any history it could not read, including a daemon restart, after which the old cursor can't continue.",
+      description: "Read one bounded page of event metadata: seq, rig, node, type and time, never payloads. Without a cursor, latest (default) starts at the newest event and returns no rows, retained reads the retained past, and recent returns the newest bounded retained tail once in ascending display order with no continuation cursor. Continue retained/latest reads with page.nextCursor and the same filters. coverage.gaps names any history it could not read, including a daemon restart, after which the old cursor can't continue.",
       inputSchema: z.object({
         cursor: z.string().optional().describe("page.nextCursor from the previous page; not with start"),
-        start: z.enum(["latest", "retained"]).optional().describe("Without a cursor: latest (default) or retained"),
+        start: z.enum(["latest", "retained", "recent"]).optional().describe("Without a cursor: latest (default), retained, or recent (one-shot newest bounded tail)"),
         rigId: z.string().optional().describe("Rig name or identifier; events with no rig are left out"),
         nodeId: z.string().optional().describe("Node identifier"),
         limit: z.number().int().min(1).max(128).optional().describe("Source rows to scan (default and maximum 128); a filter can return fewer"),
