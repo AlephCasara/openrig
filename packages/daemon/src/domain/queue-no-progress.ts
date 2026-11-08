@@ -69,7 +69,10 @@ interface Observation {
 }
 
 function statusLike(line: string): boolean {
-  return /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|esc to interrupt|\bworking\b|\bthinking\b|\bcompacting\b|running [^()]+ hook/i.test(line);
+  // Claude's live spinner can use arbitrary verbs (e.g. "Onioning…"). Match
+  // the live glyph + ellipsis + timer shape instead of a fixed verb vocabulary.
+  return /^[✶✢✳✻✽·*]\s+\S.*(?:…|\.{3})\s+\((?:running [^()·]+ hook · )?(?:\d+h\s+)?(?:\d+m\s+)?\d+s\b/.test(line)
+    || /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|esc to interrupt|\bworking\b|\bthinking\b|\bcompacting\b|running [^()]+ hook/i.test(line);
 }
 
 /** Normalize volatile terminal chrome while retaining semantic pane content. */
@@ -81,7 +84,10 @@ export function normalizePaneForNoProgress(pane: string): string {
       if (statusLike(next)) {
         next = next
           .replace(/\b(?:\d+h\s*)?(?:\d+m\s*)?\d+s\b/g, "<elapsed>")
-          .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, "<clock>");
+          .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, "<clock>")
+          // Claude redraws status token counters as it thinks. The counters
+          // are terminal chrome; the native transcript is the progress signal.
+          .replace(/[↑↓]\s*\d+(?:[.,]\d+)?[kKmM]?\s+tokens?\b/g, "<tokens>");
       } else {
         next = next.replace(/^\s*\d{1,2}:\d{2}(?::\d{2})?\b/, "<clock>");
       }
