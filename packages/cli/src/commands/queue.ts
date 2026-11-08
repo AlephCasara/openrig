@@ -972,6 +972,23 @@ const QUEUE_HOST_OPTION_HELP =
 const QUEUE_HOST_ROW_OPTION_HELP =
   "#2637: read or act on a row held by a REGISTERED remote host (see rig host ls). This CLI calls that host's daemon directly with its bearer, as send --host does; a write is recorded there as <seat>@<rig>@<this host>. EXPLICIT-ONLY — queue verbs never follow the persisted 'rig host select' selection. A blocker, watchdog or row id given with it must exist on that host.";
 
+/** The daemon persists the write before returning these advisories. Surface the
+ * unmatched seat even for JSON callers without contaminating stdout. */
+function warnUnmatchedDestinationSeat(body: unknown, status: number, strict: boolean): void {
+  if (status >= 400 || !body || typeof body !== "object") return;
+  const advisories = (body as { advisories?: unknown }).advisories;
+  if (!Array.isArray(advisories)) return;
+  for (const advisory of advisories) {
+    if (!advisory || typeof advisory !== "object" || advisory.code !== "unmatched_destination_seat") continue;
+    const available = Array.isArray(advisory.availableDestinations)
+      ? advisory.availableDestinations.filter((value: unknown): value is string => typeof value === "string") : [];
+    const message = typeof advisory.message === "string" && advisory.message.trim()
+      ? advisory.message : `Destination seat is unmatched. Available destinations: ${available.join(", ") || "(none)"}.`;
+    console.error(`Warning: ${message}`);
+    if (strict) process.exitCode = 1;
+  }
+}
+
 export function queueCommand(depsOverride?: QueueDeps): Command {
   const cmd = new Command("queue").description("Coordination L3 — owned-work queue + inbox/outbox");
   const getDeps = (): QueueDeps => depsOverride ?? {
@@ -1008,6 +1025,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--verify", "Boundedly wait after persistence for the existing receipts: the gateway receipt for a person, or the wake result and any claim already present for a seat, plus the gateway receipt when the gateway may also post to that seat (a registered person with a pane; eligible to post, not guaranteed). Never retries the create or the wake, and never claims the message was read")
     .option("--full", "Print the whole response row(s) as today, even when output.compact is on (the receipt's waiting keeps only blocker and nextBackstop)")
     .option("--json", "JSON output for agents")
+    .option("--strict", "Exit 1 after a successful write if the destination seat is unmatched")
     .action(async (opts: {
       source?: string;
       destination: string;
@@ -1035,6 +1053,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       verify?: boolean;
       json?: boolean;
       full?: boolean;
+      strict?: boolean;
     }) => {
       // OPR.0.4.6.MH3 D-3 (C3): resolve the host qualifier at the CLI edge —
       // the 3-part form never leaves the CLI; the request carries the 2-part
@@ -1184,6 +1203,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           remoteHost: remoteHostOf(hostResolved.hostId) };
         // Every create that's answered with a row ends here: its warning, --verify's delivery, and the output.
         const finish = async (created: Record<string, unknown>, status: number) => {
+          warnUnmatchedDestinationSeat(created, status, opts.strict ?? false);
           const createWarning = created?.createWarning as { code?: unknown; message?: unknown } | undefined;
           if (status < 400 && createWarning?.code === "qitem_body_not_saved" && typeof createWarning.message === "string") {
             console.error(`Warning: ${createWarning.message}`);
@@ -1488,6 +1508,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
     .option("--no-nudge", "Suppress the default nudge to the new destination")
     .option("--full", "Print the whole response row(s) as today, even when output.compact is on (the receipt's waiting keeps only blocker and nextBackstop)")
     .option("--json", "JSON output for agents")
+    .option("--strict", "Exit 1 after a successful write if the destination seat is unmatched")
     .action(async (qitemId: string, opts: {
       from?: string;
       to: string;
@@ -1506,6 +1527,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
       nudge?: boolean;
       json?: boolean;
       full?: boolean;
+      strict?: boolean;
     }) => {
       // P21 I3 reconcile: the handing-off seat is DERIVED from the seat env (X-OpenRig-Session) —
       // --from deprecated + ignored, no body fromSession. Verify the env or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
@@ -1564,6 +1586,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
         }, crossHostWriteOptions(hostResolved.hostId));
         const hint = hostSubstitutionHint(res.status, res.data, opts.to, opts.host, hostResolved);
         if (hint) console.error(hint);
+        warnUnmatchedDestinationSeat(res.data, res.status, opts.strict ?? false);
         await printQueueItemResult(client, qitemId, opts.json ?? false, res.data, res.status, writeReceipt(opts.full, {
           verb: "handoff", nudgeSuppressed: opts.nudge === false, remoteHost: remoteHostOf(hostResolved.hostId),
         }));
@@ -1592,6 +1615,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
     .option("--no-nudge", "Suppress the default nudge to the new destination")
     .option("--full", "Print the whole response row(s) as today, even when output.compact is on (the receipt's waiting keeps only blocker and nextBackstop)")
     .option("--json", "JSON output for agents")
+    .option("--strict", "Exit 1 after a successful write if the destination seat is unmatched")
     .action(async (qitemId: string, opts: {
       from?: string;
       to: string;
@@ -1610,6 +1634,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
       nudge?: boolean;
       json?: boolean;
       full?: boolean;
+      strict?: boolean;
     }) => {
       // P21 I3 reconcile: the handing-off seat is DERIVED from the seat env (X-OpenRig-Session) —
       // --from deprecated + ignored, no body fromSession. Verify the env or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
@@ -1666,6 +1691,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
         }, crossHostWriteOptions(hostResolved.hostId));
         const hint = hostSubstitutionHint(res.status, res.data, opts.to, opts.host, hostResolved);
         if (hint) console.error(hint);
+        warnUnmatchedDestinationSeat(res.data, res.status, opts.strict ?? false);
         await printQueueItemResult(client, qitemId, opts.json ?? false, res.data, res.status, writeReceipt(opts.full, {
           verb: "handoff-and-complete", nudgeSuppressed: opts.nudge === false, remoteHost: remoteHostOf(hostResolved.hostId),
         }));
