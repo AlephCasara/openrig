@@ -54,6 +54,29 @@ describe("queue no-progress detector", () => {
     expect(normalizePaneForNoProgress("• Reading file A")).not.toBe(normalizePaneForNoProgress("• Reading file B"));
   });
 
+  it("ignores Claude's volatile token counters and creative status verbs", () => {
+    const a = normalizePaneForNoProgress("✻ Onioning… (2m 38s · ↓ 10.9k tokens · thought for 8s)\n❯ ");
+    const b = normalizePaneForNoProgress("✻ Onioning… (2m 39s · ↓ 11.2k tokens · thought for 9s)\n❯ ");
+    expect(a).toBe(b);
+    expect(normalizePaneForNoProgress("✶ Synthesizing… (6s · ↑ 284 tokens · thinking)"))
+      .toBe(normalizePaneForNoProgress("✶ Synthesizing… (7s · ↑ 321 tokens · thinking)"));
+    expect(normalizePaneForNoProgress("✢ Reading source A… (6s · ↑ 284 tokens)"))
+      .not.toBe(normalizePaneForNoProgress("✢ Reading source B… (7s · ↑ 321 tokens)"));
+  });
+
+  it("does not count Claude status token churn as runtime progress", async () => {
+    const pane = (clock: string, tokens: string) => `✻ Thinking… (${clock} · ↓ ${tokens} tokens · thought for 8s)\n❯ `;
+    const detector = createQueueNoProgressDetector({ sample: vi.fn()
+      .mockResolvedValueOnce(sample({ runtime: "claude-code", rawPane: pane("1m 00s", "10.9k"),
+        normalizedPane: normalizePaneForNoProgress(pane("1m 00s", "10.9k")) }))
+      .mockResolvedValueOnce(sample({ runtime: "claude-code", rawPane: pane("1m 01s", "11.2k"),
+        normalizedPane: normalizePaneForNoProgress(pane("1m 01s", "11.2k")) })),
+    });
+    await detector.inspect(input(BASE));
+    expect(await detector.inspect(input(BASE + 10 * 60_000)))
+      .toMatchObject({ state: "finding", diagnosis: "unknown" });
+  });
+
   it("arms on the first sample and requires T/2 before reporting", async () => {
     const read = vi.fn(async () => sample());
     const detector = createQueueNoProgressDetector({ sample: read });
