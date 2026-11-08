@@ -436,6 +436,56 @@ describe("events retention — finite telemetry", () => {
   });
 });
 
+describe("events retention — resumable queue watch deletion evidence", () => {
+  it("records the highest actual deleted sequence, independently of scan progress", async () => {
+    const db = makeDb();
+    const old = [
+      insert(db, "queue.created", ago(30)),
+      insert(db, "queue.updated", ago(30)),
+      insert(db, "queue.claimed", ago(30)),
+    ];
+    insert(db, "agent.activity", ago(30));
+    insert(db, "queue.created", ago(1));
+    const result = await pruneEvents(db, { nowIso: NOW, ...noPause });
+    expect(result.deletedRows).toBe(3);
+    expect(seqs(db)).not.toContain(old[0]);
+    expect((db.prepare("SELECT deleted_through_seq AS seq FROM events_prune_history WHERE id = 1").get() as { seq: number }).seq).toBe(old.at(-1));
+  });
+
+  it("does not report a proven deletion after scanning only preserved event types", async () => {
+    const db = makeDb();
+    insert(db, "agent.activity", ago(30));
+    insert(db, "node.held", ago(30));
+    const result = await pruneEvents(db, { nowIso: NOW, ...noPause });
+    expect(result.deletedRows).toBe(0);
+    expect((db.prepare("SELECT deleted_through_seq AS seq FROM events_prune_history WHERE id = 1").get() as { seq: number }).seq).toBe(0);
+  });
+
+  it("rolls back event deletion when recording its witness fails", async () => {
+    const db = makeDb();
+    const doomed = insert(db, "queue.created", ago(30));
+    insert(db, "agent.activity", ago(1));
+    db.exec(`CREATE TRIGGER reject_prune_witness BEFORE UPDATE ON events_prune_history
+      BEGIN SELECT RAISE(ABORT, 'witness failed'); END;`);
+    await expect(pruneEvents(db, { nowIso: NOW, ...noPause })).rejects.toThrow("witness failed");
+    expect(seqs(db)).toContain(doomed);
+    expect((db.prepare("SELECT deleted_through_seq AS seq FROM events_prune_history WHERE id = 1").get() as { seq: number }).seq).toBe(0);
+    expect(db.prepare("SELECT * FROM events_retention_marks").all()).toEqual([]);
+  });
+
+  it("migrates earlier scan watermarks as unverified, never as proven deletion", () => {
+    const db = createDb();
+    open.push(db);
+    migrate(db, ALL_MIGRATIONS.filter((migration) => migration.name !== "154_events_prune_history.sql"));
+    db.prepare("INSERT INTO events_retention_marks (id, low_water_seq, prunable_types, updated_at) VALUES (1, 55, 'queue.created', ?)")
+      .run(NOW);
+    migrate(db, ALL_MIGRATIONS);
+    const row = db.prepare("SELECT deleted_through_seq AS deleted, legacy_unverified_through_seq AS legacy FROM events_prune_history WHERE id = 1")
+      .get() as { deleted: number; legacy: number };
+    expect(row).toEqual({ deleted: 0, legacy: 55 });
+  });
+});
+
 // The guard: no reader may select a prunable type from events in SQL. In a daemon source file that reads
 // FROM events, a prunable type literal may only appear where an event is EMITTED (type: or name:) or in an
 // in-memory filter (=== / !== / case). The pruner's own PRUNABLE_EVENT_TYPES declaration is exempt.

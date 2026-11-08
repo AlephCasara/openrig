@@ -8,12 +8,24 @@ export const eventsRoute = new Hono();
 /** A replay is read and written this many events at a time, never built whole. */
 const REPLAY_PAGE = 500;
 
+/** Match the destination encoded AT EVENT TIME: a queue row may be rerouted later. */
+function matchesDestination(event: PersistedEvent, destination: string): boolean {
+  const fields = event as unknown as Record<string, unknown>;
+  return ["destinationSession", "fromSession", "toSession", "originalDestination", "rerouteDestination"]
+    .some((key) => fields[key] === destination);
+}
+
 function getEventBus(c: { get: (key: string) => unknown }): EventBus {
   return c.get("eventBus" as never) as EventBus;
 }
 
 eventsRoute.get("/", (c) => {
   const rigId = c.req.query("rigId"); // Optional — omit for global stream
+  const typeParam = c.req.query("type");
+  const types = typeParam === undefined ? null : new Set(typeParam.split(",").map((type) => type.trim()).filter(Boolean));
+  const destination = c.req.query("destination");
+  const passesFilter = (event: PersistedEvent): boolean =>
+    (!types || types.has(event.type)) && (!destination || matchesDestination(event, destination));
   // `?replay=<n>` asks for the newest n events (0: none); `all`, no `replay` or any other value, the whole log, as before
   // the parameter existed.
   const replay = c.req.query("replay");
@@ -24,6 +36,8 @@ eventsRoute.get("/", (c) => {
   const lastEventId = lastEventIdRaw === undefined ? null : parseInt(lastEventIdRaw, 10);
 
   const eventBus = getEventBus(c);
+  c.header("X-OpenRig-Events-Pruned-Through", String(eventBus.prunedThroughSeq()));
+  c.header("X-OpenRig-Events-Legacy-Unverified-Through", String(eventBus.unverifiedPruneThroughSeq()));
 
   return streamSSE(c, async (stream) => {
     // Buffer for live events arriving during replay
@@ -41,6 +55,7 @@ eventsRoute.get("/", (c) => {
         const eventRigId = "rigId" in event ? (event as { rigId: string }).rigId : null;
         if (eventRigId !== rigId) return;
       }
+      if (!passesFilter(event)) return;
       if (replaying) {
         buffer.push(event);
       } else {
@@ -69,9 +84,16 @@ eventsRoute.get("/", (c) => {
       for (let page = eventBus.replayPage(lastSeq, upTo, REPLAY_PAGE, rigId); page.length > 0 && !stream.aborted;
         page = eventBus.replayPage(maxReplayedSeq, upTo, REPLAY_PAGE, rigId)) {
         for (const event of page) {
-          await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
+          if (passesFilter(event)) await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
           if (event.seq > maxReplayedSeq) maxReplayedSeq = event.seq;
         }
+      }
+
+      // Opt-in cursor frame for live-only clients. It carries no queue data, but gives an idle
+      // subscriber an exact restart point. Emit BEFORE draining the live buffer: an awaited
+      // write here must not create a replay-to-live race.
+      if (c.req.query("cursor") === "1") {
+        await stream.writeSSE({ event: "cursor", id: String(maxReplayedSeq), data: "" });
       }
 
       // 3. Drain buffer while still in replaying mode (new live events

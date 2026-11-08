@@ -55,6 +55,40 @@ async function readSSEEvents(
   return events;
 }
 
+/** Retain cursor control frames, which intentionally contain empty SSE data. */
+async function readFrames(res: Response, count: number, timeoutMs = 1200): Promise<Array<{ id: string; event: string; data: string }>> {
+  const frames: Array<{ id: string; event: string; data: string }> = [];
+  const reader = res.body!.getReader();
+  let pending = "";
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (frames.length < count && Date.now() < deadline) {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        new Promise<{ done: true; value: undefined }>((resolve) =>
+          setTimeout(() => resolve({ done: true, value: undefined }), Math.max(1, deadline - Date.now()))),
+      ]);
+      if (done) break;
+      pending += new TextDecoder().decode(value);
+      let split: number;
+      while ((split = pending.indexOf("\n\n")) >= 0) {
+        const block = pending.slice(0, split);
+        pending = pending.slice(split + 2);
+        const fields = Object.fromEntries(block.split("\n").map((line) => {
+          const i = line.indexOf(":");
+          return i < 0 ? [line, ""] : [line.slice(0, i), line.slice(i + 1).trimStart()];
+        }));
+        if (fields["id"] && (fields["data"] || fields["event"] === "cursor")) {
+          frames.push({ id: fields["id"], event: fields["event"] ?? "message", data: fields["data"] ?? "" });
+        }
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return frames;
+}
+
 describe("SSE events route", () => {
   let db: Database.Database;
   let app: Hono;
@@ -370,5 +404,52 @@ describe("SSE events route", () => {
     res.body?.cancel();
 
     prodDb.close();
+  });
+
+  it("filters replay and live updates by comma-separated type and historical destination, including handoff", async () => {
+    const created = eventBus.emit({ type: "queue.created", qitemId: "q1", sourceSession: "sender@rig", destinationSession: "bob@rig", priority: "normal", tier: null, summary: null });
+    const handoff = eventBus.emit({ type: "queue.handed_off", qitemId: "q1", fromSession: "bob@rig", toSession: "carol@rig", closureReason: "handed_off_to", summary: null });
+    eventBus.emit({ type: "queue.updated", qitemId: "q1", destinationSession: "carol@rig", fromState: "pending", toState: "blocked", closureReason: null, closureTarget: null, actorSession: "carol@rig", summary: null });
+    eventBus.emit({ type: "rig.created", rigId: "irrelevant" });
+    const res = await app.request("/api/events?type=queue.created,queue.handed_off,queue.updated&destination=bob%40rig", {
+      headers: { "Last-Event-ID": "0" },
+    });
+    let liveSeq = -1;
+    setTimeout(() => {
+      eventBus.emit({ type: "queue.created", qitemId: "q-other", sourceSession: "sender@rig", destinationSession: "carol@rig", priority: "normal", tier: null, summary: null });
+      liveSeq = eventBus.emit({ type: "queue.updated", qitemId: "q2", destinationSession: "bob@rig", fromState: "pending", toState: "done", closureReason: null, closureTarget: null, actorSession: "bob@rig", summary: null }).seq;
+    }, 10);
+    const rows = await readSSEEvents(res, 3, 1200);
+    expect(rows.map((row) => Number(row.id))).toEqual([created.seq, handoff.seq, liveSeq]);
+    expect(rows.map((row) => JSON.parse(row.data).type)).toEqual(["queue.created", "queue.handed_off", "queue.updated"]);
+  });
+
+  it("filters every replay page even if matching queue events are separated by >500 other events", async () => {
+    const matched: number[] = [];
+    for (let i = 0; i < 1200; i++) {
+      if (i % 113 === 0) {
+        matched.push(eventBus.emit({ type: "queue.created", qitemId: `q-${i}`, sourceSession: "a@rig", destinationSession: "bob@rig", priority: "normal", tier: null, summary: null }).seq);
+      } else eventBus.emit({ type: "rig.created", rigId: "other" });
+    }
+    const page = vi.spyOn(eventBus, "replayPage");
+    const res = await app.request("/api/events?type=queue.created&destination=bob%40rig", { headers: { "Last-Event-ID": "0" } });
+    const rows = await readSSEEvents(res, matched.length, 5000);
+    expect(rows.map((row) => Number(row.id))).toEqual(matched);
+    expect(page.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("sends cursor after replay and before an event emitted during replay, without loss or duplication", async () => {
+    const before = eventBus.emit({ type: "queue.created", qitemId: "before", sourceSession: "a@rig", destinationSession: "bob@rig", priority: "normal", tier: null, summary: null });
+    const original = eventBus.replayPage.bind(eventBus);
+    let liveSeq: number | null = null;
+    vi.spyOn(eventBus, "replayPage").mockImplementation((...args) => {
+      if (liveSeq === null) liveSeq = eventBus.emit({ type: "queue.created", qitemId: "during", sourceSession: "a@rig", destinationSession: "bob@rig", priority: "normal", tier: null, summary: null }).seq;
+      return original(...args);
+    });
+    const res = await app.request("/api/events?type=queue.created&destination=bob%40rig&cursor=1", { headers: { "Last-Event-ID": "0" } });
+    const frames = await readFrames(res, 3);
+    expect(frames.map((f) => f.id)).toEqual([String(before.seq), String(before.seq), String(liveSeq)]);
+    expect(frames.map((f) => f.event)).toEqual(["message", "cursor", "message"]);
+    expect(frames.filter((f) => f.data).map((f) => JSON.parse(f.data).qitemId)).toEqual(["before", "during"]);
   });
 });

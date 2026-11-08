@@ -445,7 +445,7 @@ export async function pruneEvents(db: Database.Database, opts: RetentionOptions)
   const days = opts.eventsRetentionDays ?? RETENTION_DEFAULTS.eventsRetentionDays;
   // Opt-in: 0 (the default) keeps every event and leaves the mark alone.
   if (!(days > 0)) return { deletedRows: 0, batches: 0, lowWater: null };
-  const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('events', 'events_retention_marks')").all() as Array<{ name: string }>).map((r) => r.name));
+  const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('events', 'events_retention_marks', 'events_prune_history')").all() as Array<{ name: string }>).map((r) => r.name));
   if (!tables.has("events")) return { deletedRows: 0, batches: 0, lowWater: null };
   const persistMark = tables.has("events_retention_marks");
   const window = opts.eventsWindow ?? RETENTION_DEFAULTS.eventsWindow;
@@ -479,6 +479,12 @@ export async function pruneEvents(db: Database.Database, opts: RetentionOptions)
            AND created_at < ?
       )`,
   );
+  const newestToDelete = tables.has("events_prune_history")
+    ? db.prepare(`SELECT MAX(seq) AS seq FROM events WHERE seq > ? AND seq <= ? AND type IN (${placeholders}) AND created_at < ?`)
+    : null;
+  const recordDeletion = tables.has("events_prune_history")
+    ? db.prepare(`UPDATE events_prune_history SET deleted_through_seq = MAX(deleted_through_seq, ?), updated_at = ? WHERE id = 1`)
+    : null;
   // After the delete, a prunable row left in the window was kept for being too new: the mark stops below it.
   const keptYoung = db.prepare(`SELECT MIN(seq) AS seq FROM events WHERE seq > ? AND seq <= ? AND type IN (${placeholders})`);
   const saveMark = persistMark
@@ -495,14 +501,22 @@ export async function pruneEvents(db: Database.Database, opts: RetentionOptions)
   let lowWater = validMark;
   while (lo < last && batches < maxBatches) {
     const hi = Math.min(lo + window, last);
-    const deleted = deleteWindow.run(lo, hi, ...PRUNABLE_EVENT_TYPES, cutoffSql).changes;
-    if (cap === null) {
-      const young = (keptYoung.get(lo, hi, ...PRUNABLE_EVENT_TYPES) as { seq: number | null }).seq;
-      if (young !== null) cap = young - 1;
-    }
-    lowWater = cap ?? hi;
-    // The resume point is cleared once the pass reaches the newest row: the next pass starts again at the mark.
-    saveMark?.run(lowWater, hi >= last ? null : hi, typesKey, opts.nowIso);
+    // Keep the exact deletion witness atomic with the DELETE. A crash cannot erase rows without recording the gap.
+    const deleted = db.transaction(() => {
+      const newest = newestToDelete?.get(lo, hi, ...PRUNABLE_EVENT_TYPES, cutoffSql) as { seq: number | null } | undefined;
+      const removed = deleteWindow.run(lo, hi, ...PRUNABLE_EVENT_TYPES, cutoffSql).changes;
+      if (removed > 0 && newest?.seq !== null && newest?.seq !== undefined) {
+        recordDeletion?.run(newest.seq, opts.nowIso);
+      }
+      if (cap === null) {
+        const young = (keptYoung.get(lo, hi, ...PRUNABLE_EVENT_TYPES) as { seq: number | null }).seq;
+        if (young !== null) cap = young - 1;
+      }
+      lowWater = cap ?? hi;
+      // The resume point is cleared once the pass reaches the newest row: the next pass starts again at the mark.
+      saveMark?.run(lowWater, hi >= last ? null : hi, typesKey, opts.nowIso);
+      return removed;
+    })();
     opts.onEventsWindow?.({ lo, hi, deleted });
     deletedRows += deleted;
     batches++;

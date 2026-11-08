@@ -17,6 +17,7 @@ import { omittedReadField, readView } from "../read-view.js";
 import { buildWriteReceipt, compactOutputEnabled, type ReceiptContext } from "../queue-receipt.js";
 import { TRANSITIONS_SHOWN, compactShow, compactTransitions, showEmptyNotice, transitionsNotice } from "../queue-read-compact.js";
 import { codeResultOf, planItemArtifact, type FileRead, type SharedRoot } from "../queue-artifact.js";
+import { watchQueueEvents, type QueueWatchIo } from "./queue-watch.js";
 
 /**
  * `rig queue` — coordination primitive L3/inbox/outbox commands (PL-004 Phase A).
@@ -38,6 +39,7 @@ export interface DeliveryVerifyDeps {
 
 export interface QueueDeps extends StatusDeps {
   deliveryVerify?: DeliveryVerifyDeps;
+  watchIo?: Partial<QueueWatchIo>;
   /** The host registry `--host` resolves against on the verbs that name an existing row; tests give their own. */
   hostRegistryLoader?: () => ReturnType<typeof loadHostRegistry>;
 }
@@ -978,6 +980,41 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     lifecycleDeps: realDeps(),
     clientFactory: (url: string) => new DaemonClient(url),
   };
+
+  cmd.command("watch")
+    .description("Watch queue row events; use --since-id to resume from a saved sequence")
+    .option("--destination <session>", "Only events involving this historical destination")
+    .option("--since-id <seq>", "Replay after this event sequence (inclusive cursor excluded)", (value: string) => {
+      if (!/^(0|[1-9]\d*)$/.test(value) || !Number.isSafeInteger(Number(value))) {
+        throw new InvalidArgumentError("sequence must be a non-negative safe integer");
+      }
+      return Number(value);
+    })
+    .option("--json", "One JSON object per event, one line each")
+    .action(async (opts: { destination?: string; sinceId?: number; json?: boolean }) => {
+      const deps = getDeps();
+      const controller = new AbortController();
+      const onSignal = () => controller.abort();
+      process.once("SIGINT", onSignal);
+      process.once("SIGTERM", onSignal);
+      try {
+        await withClient(deps, async (client) => {
+          const code = await watchQueueEvents(client.baseUrl, { destination: opts.destination, sinceId: opts.sinceId, json: !!opts.json }, {
+            fetchImpl: deps.watchIo?.fetchImpl ?? fetch,
+            out: deps.watchIo?.out ?? ((line) => console.log(line)),
+            err: deps.watchIo?.err ?? ((line) => console.error(line)),
+            sleep: deps.watchIo?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+            signal: deps.watchIo?.signal ?? controller.signal,
+            maxReconnects: deps.watchIo?.maxReconnects,
+            connectTimeoutMs: deps.watchIo?.connectTimeoutMs,
+          });
+          if (code !== 0) process.exitCode = code;
+        });
+      } finally {
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+      }
+    });
 
   cmd
     .command("create")

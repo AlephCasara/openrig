@@ -1680,6 +1680,7 @@ export class QueueRepository {
         return this.eventBus.persistWithinTransaction({
           type: "queue.updated",
           qitemId,
+          destinationSession: item.destinationSession,
           fromState: item.state,
           toState: item.state,
           closureReason: null,
@@ -3313,6 +3314,7 @@ export class QueueRepository {
       const persistedEvent = this.eventBus.persistWithinTransaction({
         type: "queue.updated",
         qitemId: input.qitemId,
+        destinationSession: qitem.destinationSession,
         fromState: qitem.state,
         toState: qitem.state,
         closureReason: null,
@@ -3768,6 +3770,7 @@ export class QueueRepository {
     const persistedEvent = this.eventBus.persistWithinTransaction({
       type: "queue.updated",
       qitemId: input.qitemId,
+      destinationSession: qitem.destinationSession,
       fromState,
       toState: input.state,
       closureReason: validation.closureReason ?? null,
@@ -3845,6 +3848,7 @@ export class QueueRepository {
         this.wakeRepo.record({ transitionId: rebound.transitionId, qitemId: r.qitem_id, phase: "armed",
           kind: retainedTimer ? "timer" : "blocker", ref: retainedTimer ? oldWake!.ref : successor.qitemId, deliveryStatus: null });
         const event = this.eventBus.persistWithinTransaction({ type: "queue.updated", qitemId: r.qitem_id,
+          destinationSession: r.destination_session,
           fromState: "blocked", toState: "blocked", closureReason: null, closureTarget: null,
           actorSession: input.actorSession, summary: this.getById(r.qitem_id)?.summary ?? null });
         this.eventBus.registerPersistedWithinActiveEnvelope(event);
@@ -3878,6 +3882,7 @@ export class QueueRepository {
       const dependentEvent = this.eventBus.persistWithinTransaction({
         type: "queue.updated",
         qitemId: r.qitem_id,
+        destinationSession: r.destination_session,
         fromState: "blocked",
         toState: "pending",
         closureReason: null,
@@ -3990,6 +3995,7 @@ export class QueueRepository {
       return this.eventBus.persistWithinTransaction({
         type: "queue.updated",
         qitemId,
+        destinationSession: this.getById(qitemId)?.destinationSession,
         fromState: "blocked",
         toState: "blocked",
         closureReason: null,

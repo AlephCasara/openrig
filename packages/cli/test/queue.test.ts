@@ -106,6 +106,35 @@ describe("rig queue CLI", () => {
     expect(subs).toContain("inbox-deny");
     expect(subs).toContain("list");
     expect(subs).toContain("show");
+    expect(subs).toContain("watch");
+  });
+
+  it("queue watch wires destination, resume ID and JSONL through the real CLI command", async () => {
+    const { deps } = makeDeps();
+    const fetchCalls: Array<{ url: string; headers: Headers }> = [];
+    const records: string[] = [];
+    const controller = new AbortController();
+    deps.clientFactory = (url) => ({ baseUrl: url }) as ReturnType<QueueDeps["clientFactory"]>;
+    deps.watchIo = {
+      signal: controller.signal,
+      out: (line) => { records.push(line); controller.abort(); },
+      err: (line) => { throw new Error(line); },
+      fetchImpl: vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), headers: new Headers(init?.headers) });
+        const json = JSON.stringify({ seq: 8, type: "queue.updated", qitemId: "q8", createdAt: "2026-11-08T12:00:00Z", fromState: "pending", toState: "done", actorSession: "bob@rig", destinationSession: "bob@rig" });
+        return new Response(new ReadableStream<Uint8Array>({
+          start(stream) { stream.enqueue(new TextEncoder().encode(`id: 8\ndata: ${json}\n\n`)); stream.close(); },
+        }), { headers: { "content-type": "text/event-stream" } });
+      }) as typeof fetch,
+    };
+    const program = createProgram({ queueDeps: deps });
+    program.exitOverride();
+    await program.parseAsync(["node", "rig", "queue", "watch", "--destination", "bob@rig", "--since-id", "7", "--json"]);
+    expect(process.exitCode).toBeUndefined();
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.headers.get("Last-Event-ID")).toBe("7");
+    expect(new URL(fetchCalls[0]!.url).searchParams.get("destination")).toBe("bob@rig");
+    expect(JSON.parse(records[0]!)).toMatchObject({ seq: 8, resumeId: 8, kind: "queue.updated", qitemId: "q8" });
   });
 
   it("create sends NO body sourceSession — the source derives from the transport header (X-OpenRig-Session); an explicit --source is dropped, never forwarded as a body claim", async () => {

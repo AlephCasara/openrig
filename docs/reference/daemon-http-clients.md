@@ -80,6 +80,18 @@ All of them are server-sent events (`text/event-stream`):
   `?replay=all`, no `replay`, or any other value sends the whole log first. A `Last-Event-ID` header (what
   `EventSource` sends when it reconnects) sends the events after that id instead, whatever `replay` says.
   Live events that arrive during the replay follow it, without duplicates.
+  `?type=queue.created,queue.updated` filters event types (comma-separated); `?destination=<session>`
+  matches any historical destination/source carried by the event (`destinationSession`, `fromSession`,
+  `toSession`, `originalDestination`, `rerouteDestination`) in both replay and live delivery.
+  Routing is evaluated at event time, so a subsequent handoff does not change earlier matches.
+  Queue updates newly include `destinationSession`; older `queue.updated` records without it may be
+  omitted by a destination filter. `?cursor=1` additionally emits an `event: cursor` frame with
+  the replayed upper sequence as `id:` before buffered live messages; clients can resume even if idle.
+  `X-OpenRig-Events-Pruned-Through` marks the highest actual retained-history deletion, while
+  `X-OpenRig-Events-Legacy-Unverified-Through` marks an older scan watermark for which deletion
+  cannot be proven. Use these headers to flag potential replay gaps for old `Last-Event-ID` values.
+  Event history is unlimited by default (`eventsRetentionDays = 0`); when event retention is explicitly
+  enabled, older prunable event kinds may be removed and a watch resumed from an old ID warns about gaps.
 - **`GET /api/activity/events`**: live only, no replay or ids. Each message is named after its event type:
   `seat.activity_changed`, `seat.rung_health`, `proof.judged` or `proof.sources_changed`. It tells a view to read
   again; it carries no derived state.

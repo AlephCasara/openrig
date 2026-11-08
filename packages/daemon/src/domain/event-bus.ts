@@ -367,6 +367,22 @@ export class EventBus {
     return row.seq ?? 0;
   }
 
+  /** Largest deleted event id, if retention has actually removed rows. A resume id below it has a proven gap. */
+  prunedThroughSeq(): number {
+    const exists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'events_prune_history'").get();
+    if (!exists) return 0;
+    const row = this.db.prepare("SELECT deleted_through_seq AS seq FROM events_prune_history WHERE id = 1").get() as { seq: number } | undefined;
+    return row?.seq ?? 0;
+  }
+
+  /** Legacy retention watermark predating the exact deletion witness, possibly missing history. */
+  unverifiedPruneThroughSeq(): number {
+    const exists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'events_prune_history'").get();
+    if (!exists) return 0;
+    const row = this.db.prepare("SELECT legacy_unverified_through_seq AS seq FROM events_prune_history WHERE id = 1").get() as { seq: number } | undefined;
+    return row?.seq ?? 0;
+  }
+
   private rowsAfter(seq: number): EventRow[] {
     return this.db
       .prepare(

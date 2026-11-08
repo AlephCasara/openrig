@@ -306,7 +306,7 @@ export type RigEvent =
   // closure transitions, etc.). Lets the view-event-bridge wake SSE
   // consumers on /api/views/:name/sse when ANY queue state mutation
   // changes a view result-set, not just create/handoff/claim/unclaim.
-  | { type: "queue.updated"; qitemId: string; fromState: string; toState: string; closureReason: string | null; closureTarget: string | null; actorSession: string; summary: string | null }
+  | { type: "queue.updated"; qitemId: string; destinationSession?: string; fromState: string; toState: string; closureReason: string | null; closureTarget: string | null; actorSession: string; summary: string | null }
   // Coordination primitive (PL-004 Phase B) — project (classifier) / view.
   // project.classified: emitted when a stream item is successfully projected.
   // classifier.lease_*: lifecycle of the daemon-enforced single-writer lease.
