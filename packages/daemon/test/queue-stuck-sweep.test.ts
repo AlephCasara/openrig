@@ -389,6 +389,23 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     });
   });
 
+  it("S04 ACTIVE OWNER: working activity suppresses stalled-after-claim even after the quiet-time threshold", async () => {
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    ageClaim(row.qitemId, 60);
+    repo.attachActivityReader((session) => session === "worker@r"
+      ? { activity: "working", needsInput: { count: 0, reason: null }, decidedBy: "lifecycle-hooks" }
+      : null);
+
+    expect(repo.getById(row.qitemId)!.pickup?.state).toBe("working");
+    const { result } = await runSweep();
+    expect(result.findings).not.toContainEqual(expect.objectContaining({
+      kind: "stalled-after-claim",
+      qitemId: row.qitemId,
+    }));
+    expect(await findingsFor(row.qitemId)).toHaveLength(0);
+  });
+
   // A dead owner with no delegates_to edge: the orchestrator resolves to nobody and the owner's session is gone. The
   // ladder covers handed-off batons only, so a finding addressed to the dead seat would reach nobody.
   function seedMissingSession(session: string): void {
@@ -414,6 +431,24 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     const [finding] = await findingsFor(row.qitemId);
     expect(finding!.destinationSession).toBe("sender@r");
     expect(finding!.body).toContain("worker@r is confirmed missing (session_missing), so this finding goes to sender@r, the row's creator");
+  });
+
+  it("a missing stalled claimant recovers through the source before any unrelated orchestrator routing", async () => {
+    seedMissingSession("worker@r");
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    ageClaim(row.qitemId, 60);
+
+    await runSweep({
+      resolveOrchestrator: () => "other@r",
+      resolveRecoveryAgentSeat: () => null,
+      resolveOperatorSeat: () => null,
+    });
+
+    const [finding] = await findingsFor(row.qitemId);
+    expect(finding!.destinationSession).toBe("sender@r");
+    expect(finding!.body).toContain("worker@r is confirmed missing (session_missing), so this finding goes to sender@r, the row's creator");
+    expect(finding!.body).not.toContain("other@r");
   });
 
   it("a retained exited pane sends its finding to the existing live recovery floor and preserves the original work", async () => {
@@ -830,7 +865,10 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(findings).toHaveLength(1);
     expect(findings[0]!.body).toContain(missing);
     expect(findings[0]!.body).toMatch(/verification.required|indeterminate/i);
-    expect(findings[0]!.body).toContain("OPENRIG_URL=<registered-host> rig queue show");
+    expect(findings[0]!.body).toContain(`rig queue show ${missing}`);
+    expect(findings[0]!.body).not.toContain("OPENRIG_URL=<registered-host>");
+    expect(findings[0]!.body).toContain("rig queue handoff");
+    expect(findings[0]!.body).toContain("rig queue handoff-and-complete");
     expect(findings[0]!.body).not.toMatch(/does not exist|dangling/i);
     expect(findings[0]!.body).not.toMatch(/Resolve the underlying row|rewrite the historical row/i);
 
@@ -898,6 +936,8 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(findings).toHaveLength(1);
     expect(findings[0]!.body).toContain(foreign);
     expect(findings[0]!.body).toMatch(/verification.required|indeterminate/i);
+    expect(findings[0]!.body).toContain("OPENRIG_URL=<registered-host> rig queue show qitem-xh-0123456789abcdef");
+    expect(findings[0]!.body).toContain("custody-verified: <target>");
   });
 
   it("IDEMPOTENT REFRESH: three consecutive sweeps over an unresolved finding keep ONE open finding row without manufacturing progress", async () => {
@@ -1507,7 +1547,7 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(await findingsFor(row.qitemId)).toHaveLength(0);
   });
 
-  it("DISPOSITION CLOSES THE OPEN FINDING: verification landing after the finding minted auto-closes it on the next sweep, and the finding taught the recipe", async () => {
+  it("LEGACY LOCAL DISPOSITION STILL CLOSES THE OPEN FINDING without advertising the remote verification recipe", async () => {
     const row = await mkRow();
     const missing = "qitem-20990101000000-precon02";
     repo.update({
@@ -1520,9 +1560,12 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     await runSweep();
     const open = (await findingsFor(row.qitemId))[0]!;
     expect(open.state).toBe("pending");
-    // The finding body teaches how to record the verification durably.
-    expect(open.body).toContain("custody-verified:");
+    expect(open.body).not.toContain("custody-verified:");
+    expect(open.body).toContain("rig queue handoff");
+    expect(open.body).toContain("rig queue handoff-and-complete");
 
+    // Existing explicit dispositions remain understood for compatibility even though
+    // local findings now teach repair instead of a remote-host verification recipe.
     await repo.update({
       qitemId: row.qitemId,
       actorSession: "verifier@r",
@@ -1686,8 +1729,10 @@ describe.each(["done", "handed-off"] as const)("#318 seat-target closure without
     });
     expect(findings[0]!.summary).toMatch(new RegExp(`^Custody not checked: no successor of ${row.qitemId} in this store \\(\\d+ min\\)$`));
     expect(findings[0]!.body).toContain("- next@r");
-    expect(findings[0]!.body).toContain("OPENRIG_URL=<registered-host> rig queue list --destination next@r");
-    expect(findings[0]!.body).toContain("custody-verified: <target>");
+    expect(findings[0]!.body).toContain("rig queue list --destination next@r");
+    expect(findings[0]!.body).not.toContain("OPENRIG_URL=<registered-host>");
+    expect(findings[0]!.body).toContain("rig queue handoff");
+    expect(findings[0]!.body).toContain("rig queue handoff-and-complete");
     expect(findings[0]!.tags).toContain(`stuck-sweep:dangling-closure:${row.qitemId}`);
     await runSweep();
     expect(await findingsFor(row.qitemId)).toHaveLength(1);
@@ -2058,9 +2103,10 @@ describe.each(["done", "handed-off"] as const)("#318 seat-target closure without
 
   it("RECIPE COMMAND: verificationCommand generates --destination for seat targets", async () => {
     const { mod } = await runSweep();
-    expect(mod.verificationCommand("next@r")).toBe("OPENRIG_URL=<registered-host> rig queue list --destination next@r");
-    expect(mod.verificationCommand("qitem-123")).toBe("OPENRIG_URL=<registered-host> rig queue show qitem-123");
-    expect(mod.verificationCommand("(unspecified)")).toBe("OPENRIG_URL=<registered-host> rig queue list");
+    expect(mod.verificationCommand("next@r")).toBe("rig queue list --destination next@r");
+    expect(mod.verificationCommand("qitem-123")).toBe("rig queue show qitem-123");
+    expect(mod.verificationCommand("qitem-123@remote-host")).toBe("OPENRIG_URL=<registered-host> rig queue show qitem-123");
+    expect(mod.verificationCommand("(unspecified)")).toBe("rig queue list");
   });
 });
 

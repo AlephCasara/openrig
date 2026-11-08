@@ -474,15 +474,21 @@ function evidenceIsNewer(evidenceAt: string, closedAt: string): boolean {
   return !Number.isNaN(evidence) && !Number.isNaN(closed) && evidence > closed;
 }
 
+function isRemoteVerificationTarget(target: string): boolean {
+  return /^qitem-[^@]+@[^@]+$/.test(target);
+}
+
 export function verificationCommand(target: string): string {
   if (target.startsWith("qitem-")) {
     const successorId = target.split("@", 1)[0] ?? target;
-    return `OPENRIG_URL=<registered-host> rig queue show ${successorId}`;
+    return isRemoteVerificationTarget(target)
+      ? `OPENRIG_URL=<registered-host> rig queue show ${successorId}`
+      : `rig queue show ${successorId}`;
   }
   if (target === "(unspecified)") {
-    return "OPENRIG_URL=<registered-host> rig queue list";
+    return "rig queue list";
   }
-  return `OPENRIG_URL=<registered-host> rig queue list --destination ${target}`;
+  return `rig queue list --destination ${target}`;
 }
 
 /** The finding's headline says where custody was not checked, so its owner can act from the list. */
@@ -499,6 +505,16 @@ function evidenceBody(db: Database.Database, c: Candidate): string {
     const checks = c.verificationTargets
       .map((target) => `- ${target}\n  ${verificationCommand(target)}`)
       .join("\n");
+    const localTargets = c.verificationTargets.filter((target) => !isRemoteVerificationTarget(target));
+    const remoteTargets = c.verificationTargets.filter(isRemoteVerificationTarget);
+    const localGuidance = localTargets.length
+      ? `Local targets are checked in this store. If the intended local successor is still missing, repair custody by creating/linking it or reopening the source row. For local transfers, use rig queue handoff or rig queue handoff-and-complete so successor custody is created atomically.\n`
+      : "";
+    const remoteGuidance = remoteTargets.length
+      ? `Host-qualified targets remain indeterminate until checked on the registered host. After a registered-host read confirms a target, record it durably on the closed row so the sweep stops asking:\n` +
+        `  rig queue update ${c.row.qitemId} --note "custody-verified: <target> <how verified>"\n` +
+        `Do not rewrite historical custody from this local observation; record the verification result separately.`
+      : "";
     return (
       `STUCK SWEEP FINDING (successor-verification-required)\n` +
       `row: ${c.row.qitemId}\n` +
@@ -506,10 +522,9 @@ function evidenceBody(db: Database.Database, c: Candidate): string {
       `age: ${c.ageMinutes} min\n` +
       `last transition: ${lastTransitionLine(db, c.row.qitemId)}\n` +
       `why: ${c.why}\n` +
-      `verification targets (indeterminate until checked on the registered host):\n${checks}\n` +
-      `After a registered-host read confirms a target, record it durably on the closed row so the sweep stops asking:\n` +
-      `  rig queue update ${c.row.qitemId} --note "custody-verified: <target> <how verified>"\n` +
-      `Do not rewrite historical custody from this local observation; record the verification result separately.`
+      `verification targets:\n${checks}\n` +
+      localGuidance +
+      remoteGuidance
     );
   }
   return (
@@ -592,7 +607,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       candidates.push({
         kind: stalled.kind,
         row,
-        route: resolveOrch(stalled.target, row) ?? stalled.target,
+        route: stalled.target,
         // The stall's own age: from the anchor the pickup decision uses, floored as its "why" counts, so a claim
         // parked and resumed doesn't count its parked time and the headline matches the why to the minute.
         ageMinutes: wholeMinutesSince(evidenceAt, now),
@@ -894,6 +909,14 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       // Name the rule that chose it, so whoever receives the finding knows why, and which setting to change.
       c.why += `; ${c.route} ${stoppedDescription}, so this finding goes to ${floor}, ${RECOVERY_SEAT_RULES[chosen]}`;
       c.route = floor;
+    }
+
+    // A stalled claimant gets missing-session recovery before ordinary orchestrator routing.
+    // Otherwise resolving the claimant to a different live seat first can hide the fact that
+    // the actual owner stopped and strand recovery on a seat that never held the row.
+    for (const c of candidates) {
+      if (c.kind !== "stalled-after-claim" || c.route !== c.row.destinationSession || sessionMissing(c.route)) continue;
+      c.route = resolveOrch(c.route, c.row) ?? c.route;
     }
 
     // A destination its own wake found unroutable, and still is (no terminal, not a person: a hosted member, or a
