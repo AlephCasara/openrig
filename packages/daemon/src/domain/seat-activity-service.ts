@@ -590,6 +590,7 @@ export class SeatActivityService {
       needsInput: { count: 0, reason: null },
       needsInputEvidence: null,
       backgroundWork: null, // a new occupant never inherits the old one's shell
+      lastWorkingAt: null,
       decidedBy: null,
       seq: seat.arbitrated.seq + 1, // the swap IS a visible event
       changedAt: at,
@@ -954,6 +955,12 @@ export class SeatActivityService {
       needsInputEvidence,
       backgroundWork,
       decidedBy,
+      // The queue's stall grace needs evidence of real recent work after a turn
+      // ends. A tmux/window sample may be mere animation, so it never refreshes
+      // this timestamp. The oracle has already applied the rung's trust policy.
+      lastWorkingAt: nextActivity === "working" && candidate?.activity === "working"
+        && decidedBy !== "window-sampling" && !needsInput.count
+        ? candidate.observedAt : seat.arbitrated.lastWorkingAt ?? null,
       seq: changed ? seat.arbitrated.seq + 1 : seat.arbitrated.seq,
       changedAt: changed ? this.now().toISOString() : seat.arbitrated.changedAt,
       rungs: this.rungsView(seat),

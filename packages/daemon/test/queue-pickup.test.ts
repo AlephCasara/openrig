@@ -121,6 +121,42 @@ describe("S04 pickup receipts — derived, visible, threshold-honest", () => {
     expect(p?.evidence).toContain("owner activity unknown"); // "…zero transitions since"
   });
 
+  it("RECENT TRUSTED WORK: a finished turn retains only a bounded post-claim grace", async () => {
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    ageClaim(row.qitemId, 60);
+    let observedAt = new Date(Date.now() - 2 * 60_000).toISOString();
+    repo.attachActivityReader(() => ({ activity: "idle-at-prompt", needsInput: { count: 0, reason: null },
+      decidedBy: "lifecycle-hooks", lastWorkingAt: observedAt }));
+    expect(pickupOf(repo.getById(row.qitemId)!)?.state).toBe("working");
+    observedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    expect(pickupOf(repo.getById(row.qitemId)!)?.state).toBe("stalled-after-claim");
+    process.env[THRESHOLD_ENV] = "15";
+    expect(pickupOf(repo.getById(row.qitemId)!)?.state).toBe("working");
+  });
+
+  it("TRUST BOUNDARIES: pre-claim, future and window-sampled animation cannot postpone a stalled claim", async () => {
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    ageClaim(row.qitemId, 60);
+    let observedAt = new Date(Date.now() - 61 * 60_000).toISOString();
+    let decidedBy = "lifecycle-hooks";
+    let activity = "idle-at-prompt";
+    repo.attachActivityReader(() => ({ activity: activity as "working" | "idle-at-prompt",
+      needsInput: { count: 0, reason: null }, decidedBy: decidedBy as "lifecycle-hooks" | "window-sampling",
+      lastWorkingAt: observedAt }));
+    expect(pickupOf(repo.getById(row.qitemId)!)?.state).toBe("stalled-after-claim");
+    observedAt = new Date(Date.now() + 60_000).toISOString();
+    expect(pickupOf(repo.getById(row.qitemId)!)?.state).toBe("stalled-after-claim");
+    activity = "working";
+    decidedBy = "window-sampling";
+    observedAt = new Date(Date.now() - 61 * 60_000).toISOString();
+    expect(pickupOf(repo.getById(row.qitemId)!)?.state).toBe("stalled-after-claim");
+    activity = "working";
+    decidedBy = "lifecycle-hooks";
+    expect(pickupOf(repo.getById(row.qitemId)!)?.state).toBe("working");
+  });
+
   it("PARKED (the fourth honest state): a blocked row is NEVER stalled — it reads parked", async () => {
     const blocker = await mkRow();
     const row = await mkRow();

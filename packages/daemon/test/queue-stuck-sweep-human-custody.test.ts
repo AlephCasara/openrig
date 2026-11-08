@@ -98,7 +98,7 @@ describe("#514 custody findings for a human decision", () => {
       expect(finding).toMatchObject({ sourceSession: "asker@r", destinationSession: "closer@r", state: "pending",
         evidenceRef: `rig queue show ${row.qitemId}` });
       expect(finding!.summary).toContain(`Custody not checked: no successor of ${row.qitemId} in this store`);
-      expect(finding!.body).toContain("rig queue list --destination next@r");
+      expect(finding!.body).toContain("rig queue list --all-rigs --all --destination next@r --full --json");
       expect(finding!.tags).toContain(STUCK_SWEEP_FINDING_TAG);
       expect(repo.transitionLog.latestOwnerNotificationForQitem(finding!.qitemId)).toBeNull();
       expect(sent).toEqual(["closer@r"]);
@@ -198,12 +198,12 @@ describe("#514 custody findings for a human decision", () => {
     expect(findings(row.qitemId)[0]!.destinationSession).toBe("owner@external");
   });
 
-  it("keeps an agent destination's existing custody route", async () => {
+  it("routes an agent-owned local seat custody gap to the next agent seat", async () => {
     const row = await ask("worker@r");
     await close(row.qitemId);
     await sweep();
     expect(findings(row.qitemId)).toHaveLength(1);
-    expect(findings(row.qitemId)[0]!.destinationSession).toBe("worker@r");
+    expect(findings(row.qitemId)[0]!.destinationSession).toBe("next@r");
   });
 
   it.each([

@@ -5582,6 +5582,8 @@ export class QueueRepository {
       state: row.state,
       lastMeaningfulAt: meaningful?.at,
       activity: activity?.activity,
+      decidedBy: activity?.decidedBy,
+      lastWorkingAt: activity?.lastWorkingAt,
       needsInput: activity?.needsInput.count,
       needsInputReason: activity?.needsInput.reason,
       backgroundWork: activity?.backgroundWork ?? null,

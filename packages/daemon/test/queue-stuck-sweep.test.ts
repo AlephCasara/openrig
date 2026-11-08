@@ -363,6 +363,7 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     const findings = await findingsFor(row.qitemId);
     expect(findings).toHaveLength(1);
     expect(findings[0]!.destinationSession).toBe("worker@r");
+    expect(findings[0]!.body).toContain("queue.pickup_stall_threshold_minutes");
 
     await repo.update({
       qitemId: row.qitemId,
@@ -388,6 +389,22 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
       state: "done",
       closureReason: "no-follow-on",
     });
+  });
+
+  it("a recent trusted working observation suppresses a false stall until the configured grace expires", async () => {
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    ageClaim(row.qitemId, 60);
+    let lastWorkingAt = new Date().toISOString();
+    repo.attachActivityReader(() => ({ activity: "idle-at-prompt", needsInput: { count: 0, reason: null },
+      decidedBy: "lifecycle-hooks", lastWorkingAt }));
+    expect(repo.getById(row.qitemId)!.pickup?.state).toBe("working");
+    expect((await runSweep()).result.findings.some((f) => f.kind === "stalled-after-claim")).toBe(false);
+    lastWorkingAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    expect(repo.getById(row.qitemId)!.pickup?.state).toBe("stalled-after-claim");
+    expect((await runSweep()).result.findings).toContainEqual(expect.objectContaining({
+      kind: "stalled-after-claim", qitemId: row.qitemId, action: "created",
+    }));
   });
 
   // A dead owner with no delegates_to edge: the orchestrator resolves to nobody and the owner's session is gone. The
@@ -426,37 +443,37 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     ageClaim(row.qitemId,60);
     await runSweep({ resolveOperatorSeat: () => "operator@kernel" });
     const [finding] = await findingsFor(row.qitemId);
-    expect(finding!.destinationSession).toBe("operator@kernel");
+    expect(finding!.destinationSession).toBe("sender@r");
     expect(repo.getById(row.qitemId)).toMatchObject({ qitemId:row.qitemId, body:"work", destinationSession:"worker@r", state:"in-progress" });
     expect(finding!.body).toContain("pane_exited");
   });
 
-  it("with an operator seat set, a dead claimant's finding goes there, as the ladder's floor does", async () => {
+  it("with an operator seat set, a dead claimant's finding returns to its creator first", async () => {
     const row = await mkRow();
     repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
     ageClaim(row.qitemId, 60);
     await runSweep({ sessionConfirmedMissing: (s: string) => s === "worker@r", resolveOperatorSeat: () => "operator-admin@kernel" });
-    expect((await findingsFor(row.qitemId))[0]!.destinationSession).toBe("operator-admin@kernel");
+    expect((await findingsFor(row.qitemId))[0]!.destinationSession).toBe("sender@r");
   });
 
   // workspace.operator_seat_name is the person approvals reach; agents.operator_session is the operator agent. Recovery
   // reaches the agent when one is configured, without repointing the setting approvals use.
-  it("an operator agent, when configured, takes a dead claimant's finding before the operator seat", async () => {
+  it("an operator agent is the fallback when a dead claimant's creator is also missing", async () => {
     const row = await mkRow();
     repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
     ageClaim(row.qitemId, 60);
-    await runSweep({ sessionConfirmedMissing: (s: string) => s === "worker@r",
+    await runSweep({ sessionConfirmedMissing: (s: string) => s === "worker@r" || s === "sender@r",
       resolveRecoveryAgentSeat: () => "operator-admin@kernel", resolveOperatorSeat: () => "approver@r" });
     const [finding] = await findingsFor(row.qitemId);
     expect(finding!.destinationSession).toBe("operator-admin@kernel");
     expect(finding!.body).toContain("so this finding goes to operator-admin@kernel, the operator agent (agents.operator_session)");
   });
 
-  it("an operator agent whose own session is confirmed missing is passed over for the operator seat", async () => {
+  it("missing creator and operator agent fall back to the live operator seat", async () => {
     const row = await mkRow();
     repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
     ageClaim(row.qitemId, 60);
-    await runSweep({ sessionConfirmedMissing: (s: string) => s === "worker@r" || s === "operator-admin@kernel",
+    await runSweep({ sessionConfirmedMissing: (s: string) => s === "worker@r" || s === "operator-admin@kernel" || s === "sender@r",
       resolveRecoveryAgentSeat: () => "operator-admin@kernel", resolveOperatorSeat: () => "approver@r" });
     const [finding] = await findingsFor(row.qitemId);
     expect(finding!.destinationSession).toBe("approver@r");
@@ -831,7 +848,8 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(findings).toHaveLength(1);
     expect(findings[0]!.body).toContain(missing);
     expect(findings[0]!.body).toMatch(/verification.required|indeterminate/i);
-    expect(findings[0]!.body).toContain("OPENRIG_URL=<registered-host> rig queue show");
+    expect(findings[0]!.body).toContain(`rig queue show ${missing} --full --json`);
+    expect(findings[0]!.body).toContain("rig queue update");
     expect(findings[0]!.body).not.toMatch(/does not exist|dangling/i);
     expect(findings[0]!.body).not.toMatch(/Resolve the underlying row|rewrite the historical row/i);
 
@@ -899,6 +917,7 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(findings).toHaveLength(1);
     expect(findings[0]!.body).toContain(foreign);
     expect(findings[0]!.body).toMatch(/verification.required|indeterminate/i);
+    expect(findings[0]!.body).toContain("rig host list && rig queue show qitem-xh-0123456789abcdef --host vps-b --full --json");
   });
 
   it("IDEMPOTENT REFRESH: three consecutive sweeps over an unresolved finding keep ONE open finding row without manufacturing progress", async () => {
@@ -1683,17 +1702,23 @@ describe.each(["done", "handed-off"] as const)("#318 seat-target closure without
     expect(findings).toHaveLength(1);
     expect(findings[0]!).toMatchObject({
       state: "pending",
-      destinationSession: "worker@r",
+      destinationSession: "next@r",
     });
     expect(findings[0]!.summary).toMatch(new RegExp(`^Custody not checked: no successor of ${row.qitemId} in this store \\(\\d+ min\\)$`));
     expect(findings[0]!.body).toContain("- next@r");
-    expect(findings[0]!.body).toContain("OPENRIG_URL=<registered-host> rig queue list --destination next@r");
-    expect(findings[0]!.body).toContain("custody-verified: <target>");
+    expect(findings[0]!.body).toContain("rig queue list --all-rigs --all --destination next@r --full --json");
+    expect(findings[0]!.body).toContain(`rig queue update ${row.qitemId} --state pending --reopen`);
+    expect(findings[0]!.body).toContain(`rig queue handoff-and-complete ${row.qitemId} --to next@r`);
+    expect(findings[0]!.body).toContain("custody-verified: <exact-target> <how verified>");
+    expect(findings[0]!.body).not.toContain("OPENRIG_URL=<registered-host>");
     expect(findings[0]!.tags).toContain(`stuck-sweep:dangling-closure:${row.qitemId}`);
     await runSweep();
     expect(await findingsFor(row.qitemId)).toHaveLength(1);
     expect(repo.getById(row.qitemId)?.state).toBe(closureState);
-    expect(repo.list({ destinationSession: "next@r" })).toHaveLength(0);
+    // The recovery finding itself is now assigned to the successor seat;
+    // it is not a linked successor of the original closed row.
+    expect(repo.list({ destinationSession: "next@r" }).map((item) => item.qitemId))
+      .toEqual([findings[0]!.qitemId]);
   });
 
   it("TRANSACTIONAL HANDOFF: repo.handoff to a seat target creates linked successor in same txn — zero findings", async () => {
@@ -2059,9 +2084,11 @@ describe.each(["done", "handed-off"] as const)("#318 seat-target closure without
 
   it("RECIPE COMMAND: verificationCommand generates --destination for seat targets", async () => {
     const { mod } = await runSweep();
-    expect(mod.verificationCommand("next@r")).toBe("OPENRIG_URL=<registered-host> rig queue list --destination next@r");
-    expect(mod.verificationCommand("qitem-123")).toBe("OPENRIG_URL=<registered-host> rig queue show qitem-123");
-    expect(mod.verificationCommand("(unspecified)")).toBe("OPENRIG_URL=<registered-host> rig queue list");
+    expect(mod.verificationCommand("next@r")).toBe("rig queue list --all-rigs --all --destination next@r --full --json");
+    expect(mod.verificationCommand("qitem-123")).toBe("rig queue show qitem-123 --full --json");
+    expect(mod.verificationCommand("qitem-xh-1@vps-b")).toBe("rig host list && rig queue show qitem-xh-1 --host vps-b --full --json");
+    expect(mod.verificationCommand("(unspecified)")).toBe("rig queue list --all-rigs --all --full --json");
+    expect(mod.verificationCommand("seat'one@r")).toContain("--destination 'seat'\\''one@r'");
   });
 });
 

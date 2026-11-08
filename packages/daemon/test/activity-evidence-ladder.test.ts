@@ -91,6 +91,30 @@ describe("S19 A3 — the ladder ranks and falls honestly", () => {
     expect(s.decidedBy).toBe("self-report");
   });
 
+  it("only trusted work refreshes the pickup timestamp; terminal animation cannot extend it", () => {
+    const initial = new Date(h.clock.now).toISOString();
+    h.svc.reportEvidence(ev(h.clock, "window-sampling", "tmux:window-activity", "working"));
+    expect(h.svc.getSeatState(SEAT)!.lastWorkingAt).toBeNull();
+
+    h.clock.now += 1_000;
+    const firstTrusted = new Date(h.clock.now).toISOString();
+    h.svc.reportEvidence(ev(h.clock, "lifecycle-hooks", "claude:hooks", "working"));
+    expect(h.svc.getSeatState(SEAT)!.lastWorkingAt).toBe(firstTrusted);
+
+    h.clock.now += HOOK_AUTHORITY_WINDOW_MS + 1_000;
+    h.svc.reportEvidence(ev(h.clock, "window-sampling", "tmux:window-activity", "working"));
+    expect(h.svc.getSeatState(SEAT)!.lastWorkingAt).toBe(firstTrusted);
+
+    h.clock.now += 1_000;
+    const secondTrusted = new Date(h.clock.now).toISOString();
+    h.svc.reportEvidence(ev(h.clock, "self-report", "claude:pid-json", "working"));
+    expect(h.svc.getSeatState(SEAT)!.lastWorkingAt).toBe(secondTrusted);
+    h.clock.now += 1_000;
+    h.svc.reportEvidence(ev(h.clock, "self-report", "claude:pid-json", "idle-at-prompt"));
+    expect(h.svc.getSeatState(SEAT)!.lastWorkingAt).toBe(secondTrusted);
+    expect(initial).not.toBe(secondTrusted);
+  });
+
   it("self-report absent (unreadable file = no evidence) falls silently to hooks, then sampling, then unknown", () => {
     expect(h.svc.getSeatState(SEAT)!.activity).toBe("unknown"); // nothing yet — honest
     h.svc.reportEvidence(ev(h.clock, "window-sampling", "tmux:window-activity", "working"));
@@ -265,6 +289,7 @@ describe("S19 A3 — seat-keyed state through an occupant swap", () => {
     h.svc.declareRungInventory({ seatNodeId: SEAT, sessionName: SESSION }, CLAUDE_INVENTORY);
     h.svc.reportEvidence(ev(h.clock, "self-report", "claude:pid-json", "working"));
     expect(h.svc.getSeatState(SEAT)!.activity).toBe("working");
+    expect(h.svc.getSeatState(SEAT)!.lastWorkingAt).toBe(new Date(h.clock.now).toISOString());
 
     h.clock.now += 1_000;
     h.svc.declareOccupantSwap(SEAT, "gen-successor-1");
@@ -272,6 +297,7 @@ describe("S19 A3 — seat-keyed state through an occupant swap", () => {
     const s = h.svc.getSeatState(SEAT)!;
     expect(s.lastSwap).toEqual({ generation: "gen-successor-1", at: new Date(h.clock.now).toISOString() });
     expect(s.activity).toBe("unknown"); // the swap window reads as the swap event, never idle/working flicker
+    expect(s.lastWorkingAt).toBeNull(); // a successor cannot inherit grace from a predecessor's turn
     // The predecessor's evidence and rung authority never bleed onto the successor:
     expect(s.rungs.every((r) => r.trust === "absent" || r.lastEvidenceAt === null)).toBe(true);
 

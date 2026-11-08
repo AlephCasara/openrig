@@ -4,7 +4,7 @@ import { createRecoveryLookup, recoveryId, recoveryTag } from "./queue-recovery.
 import { quietHoldCustody } from "./quiet-hold-custody.js";
 import { queueWaitNotice } from "./queue-wait-backoff.js";
 import { lastMeaningfulTransition, pendingSince } from "./queue-waiting.js";
-import { resolvePickupThresholdMinutes } from "./queue-pickup.js";
+import { PICKUP_STALL_THRESHOLD_KEY, resolvePickupThresholdMinutes } from "./queue-pickup.js";
 // S02 (OPR.0.5.5.2) — STANDING STUCK SWEEP. `queue overdue` and `queue undelivered` are the
 // two halves of "is anything silently stuck" — and they were verbs someone had to remember to
 // run. This module makes the sweep a standing daemon loop's body: both halves swept on a
@@ -156,8 +156,8 @@ export function createStuckSweepStatus(): StuckSweepStatus {
   };
 }
 
-/** Cadence, fresh-read with fail-open defaults (the queue-pickup precedent: a config flip
- *  applies to the next tick, and a settings error never silences the sweep). */
+/** Cadence is read when the daemon starts the interval scheduler; changing this
+ *  setting requires a scheduler restart. Resolution errors use the default. */
 export function resolveStuckSweepIntervalSeconds(): number {
   try {
     const v = new SettingsStore().resolveOne(STUCK_SWEEP_INTERVAL_KEY as never).value;
@@ -489,15 +489,22 @@ function evidenceIsNewer(evidenceAt: string, closedAt: string): boolean {
   return !Number.isNaN(evidence) && !Number.isNaN(closed) && evidence > closed;
 }
 
+function shellArg(value: string): string {
+  return /^[a-zA-Z0-9_@.\/-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 export function verificationCommand(target: string): string {
   if (target.startsWith("qitem-")) {
-    const successorId = target.split("@", 1)[0] ?? target;
-    return `OPENRIG_URL=<registered-host> rig queue show ${successorId}`;
+    const at = target.indexOf("@");
+    if (at !== -1) {
+      const id = target.slice(0, at);
+      const host = target.slice(at + 1);
+      return `rig host list && rig queue show ${shellArg(id)} --host ${shellArg(host)} --full --json`;
+    }
+    return `rig queue show ${shellArg(target)} --full --json`;
   }
-  if (target === "(unspecified)") {
-    return "OPENRIG_URL=<registered-host> rig queue list";
-  }
-  return `OPENRIG_URL=<registered-host> rig queue list --destination ${target}`;
+  if (target === "(unspecified)") return "rig queue list --all-rigs --all --full --json";
+  return `rig queue list --all-rigs --all --destination ${shellArg(target)} --full --json`;
 }
 
 /** The finding's headline says where custody was not checked, so its owner can act from the list. */
@@ -521,10 +528,17 @@ function evidenceBody(db: Database.Database, c: Candidate): string {
       `age: ${c.ageMinutes} min\n` +
       `last transition: ${lastTransitionLine(db, c.row.qitemId)}\n` +
       `why: ${c.why}\n` +
-      `verification targets (indeterminate until checked on the registered host):\n${checks}\n` +
-      `After a registered-host read confirms a target, record it durably on the closed row so the sweep stops asking:\n` +
-      `  rig queue update ${c.row.qitemId} --note "custody-verified: <target> <how verified>"\n` +
-      `Do not rewrite historical custody from this local observation; record the verification result separately.`
+      `verification targets (indeterminate until checked at the target's actual host):\n${checks}\n` +
+      `For a seat target, a matching destination alone is insufficient: verify handed_off_from or chain_of_record links to ${c.row.qitemId}.\n` +
+      `If the successor is verified, record it durably on the closed source:\n` +
+      `  rig queue update ${shellArg(c.row.qitemId)} --note "custody-verified: <exact-target> <how verified>"\n` +
+      (c.verificationTargets.length === 1 && !c.verificationTargets[0]!.startsWith("qitem-")
+        && c.verificationTargets[0] !== "(unspecified)"
+        ? `If this seat target is local and has no linked successor, repair via a transactional handoff. Reopen the terminal source first:\n` +
+          `  rig queue update ${shellArg(c.row.qitemId)} --state pending --reopen --note "repair missing successor"\n` +
+          `  rig queue handoff-and-complete ${shellArg(c.row.qitemId)} --to ${shellArg(c.verificationTargets[0]!)} --note "repair successor custody"\n`
+        : "") +
+      `A local miss does not establish absence on another host. Preserve the original closure history and record verification separately.`
     );
   }
   return (
@@ -534,6 +548,9 @@ function evidenceBody(db: Database.Database, c: Candidate): string {
     `age: ${c.ageMinutes} min\n` +
     `last transition: ${lastTransitionLine(db, c.row.qitemId)}\n` +
     `why: ${c.why}\n` +
+    (c.kind === "stalled-after-claim"
+      ? `claim stall threshold: ${resolvePickupThresholdMinutes()} min (${PICKUP_STALL_THRESHOLD_KEY}); adjust this setting for long-running work without queue writes.\n`
+      : "") +
     `Resolve the underlying row; the sweep closes this finding itself once the row is no longer stuck.`
   );
 }
@@ -634,7 +651,10 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       return {
         kind: stalled.kind,
         row,
-        route: resolveOrch(stalled.target, row) ?? stalled.target,
+        // The living claimant owns the first response. Only a confirmed missing
+        // claimant enters recovery routing below; escalation of another kind
+        // must not steal this work from the person actively holding it.
+        route: stalled.target,
         // The stall's own age: from the anchor the pickup decision uses, floored as its "why" counts, so a claim
         // parked and resumed doesn't count its parked time and the headline matches the why to the minute.
         ageMinutes: wholeMinutesSince(evidenceAt, now),
@@ -869,6 +889,21 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
         // owner refinement must not stop unrelated findings or their resolution.
         if (!recheck) log(`[stuck-sweep] keeping custody route for ${row.qitemId} at ${row.destinationSession}: ${err.message}`);
       }
+      // If this is an ordinary agent-owned closure with one unlinked, locally
+      // actionable successor seat, the next seat can fix custody directly. A
+      // person's original request still belongs to the agent that closed it.
+      try {
+        if (verificationTargets.length === 1 && verificationTargets[0] === row.closureTarget
+          && !verificationTargets[0]!.startsWith("qitem-") && verificationTargets[0] !== "(unspecified)"
+          && !deps.queueRepo.isHumanDestination(row.destinationSession)
+          && !deps.queueRepo.isHumanDestination(verificationTargets[0]!)
+          && deps.queueRepo.acceptsDestination(verificationTargets[0]!)) {
+          route = verificationTargets[0]!;
+        }
+      } catch (err) {
+        if (!(err instanceof QueueRepositoryError) || err.code !== "human_registry_unavailable") throw err;
+        // Keep the established owner while identity classification is unavailable.
+      }
       return {
         kind: "dangling-closure",
         row,
@@ -1056,7 +1091,11 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       const stoppedDescription = stoppedReason(c.route) === "pane_exited"
         ? "has a confirmed exited pane (pane_exited)" : "is confirmed missing (session_missing)";
       recoverySeats ??= [(deps.resolveRecoveryAgentSeat ?? resolveRecoveryAgentSeat)(), (deps.resolveOperatorSeat ?? resolveOperatorSeat)()];
-      const choices = [...recoverySeats, c.row.sourceSession];
+      // A dead claimant's original sender is the accountable handback owner,
+      // ahead of unrelated operator seats. Other findings keep the ladder floor.
+      const choices = c.kind === "stalled-after-claim"
+        ? [c.row.sourceSession, ...recoverySeats]
+        : [...recoverySeats, c.row.sourceSession];
       const chosen = choices.findIndex((seat) => !!seat && seat !== c.route && !sessionMissing(seat));
       const floor = chosen < 0 ? null : choices[chosen]!;
       if (!floor) {
@@ -1064,7 +1103,10 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
         return;
       }
       // Name the rule that chose it, so whoever receives the finding knows why, and which setting to change.
-      c.why += `; ${c.route} ${stoppedDescription}, so this finding goes to ${floor}, ${RECOVERY_SEAT_RULES[chosen]}`;
+      const rule = c.kind === "stalled-after-claim"
+        ? [RECOVERY_SEAT_RULES[2], RECOVERY_SEAT_RULES[0], RECOVERY_SEAT_RULES[1]][chosen]
+        : RECOVERY_SEAT_RULES[chosen];
+      c.why += `; ${c.route} ${stoppedDescription}, so this finding goes to ${floor}, ${rule}`;
       c.route = floor;
     };
 

@@ -70,6 +70,10 @@ export interface PickupFacts {
   postClaimMotionCount: number;
   lastMeaningfulAt?: string;
   activity?: string;
+  /** The authority behind current activity; sampled terminal animation is not positive work proof. */
+  decidedBy?: string | null;
+  /** Positive trusted owner work evidence; never a terminal/window sample. */
+  lastWorkingAt?: string | null;
   needsInput?: number;
   needsInputReason?: string | null;
   /** #2661 (b): the owner is idle at the prompt with a live background shell, first seen at observedAt. */
@@ -108,10 +112,17 @@ function deriveClaimPickup(facts: PickupFacts): PickupReceipt {
   // it is the first honest row-scoped writer, and wiring reopens only in that slice.
   const heartbeatAfterClaim =
     !!facts.lastHeartbeat && Date.parse(facts.lastHeartbeat) > claimedMs;
-  if (facts.activity === "working" && !facts.needsInput) return { state: "working" };
+  if (facts.activity === "working" && facts.decidedBy !== "window-sampling" && !facts.needsInput) return { state: "working" };
   // Legacy callers without a timestamp retain their historical count contract.
   if (facts.lastMeaningfulAt === undefined && (facts.postClaimMotionCount > 0 || heartbeatAfterClaim)) return { state: "working" };
   const thresholdMs = (facts.thresholdMinutes ?? resolvePickupThresholdMinutes()) * 60_000;
+  const workingMs = Date.parse(facts.lastWorkingAt ?? "");
+  // A recently active owner has a bounded grace, even if its turn just ended.
+  // Require evidence after THIS claim and never allow future-dated evidence.
+  if (Number.isFinite(workingMs) && workingMs >= claimedMs && workingMs <= now.getTime()
+    && now.getTime() - workingMs <= thresholdMs) {
+    return { state: "working", evidence: "recent trusted owner activity within pickup stall threshold" };
+  }
   const anchor = Math.max(claimedMs, Date.parse(facts.lastMeaningfulAt ?? facts.claimedAt), heartbeatAfterClaim ? Date.parse(facts.lastHeartbeat!) : claimedMs);
   const ageMs = now.getTime() - anchor;
   if (ageMs <= thresholdMs) return { state: "working" };

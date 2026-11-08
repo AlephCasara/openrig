@@ -179,6 +179,9 @@ export interface ArbitratedSeatState {
   /** Monotonic arbitrated-state sequence (wait-after-seq consumes it). */
   seq: number;
   changedAt: string;
+  /** Last positive work signal from a trusted lifecycle/self-report rung. Sampling
+   *  terminal/window animation is deliberately excluded. Cleared on occupant swap. */
+  lastWorkingAt?: string | null;
   rungs: Array<{ rung: EvidenceRungId; sourceId: string; trust: RungTrust; lastEvidenceAt: string | null }>;
   /** The occupant swap is its OWN visible event, never an activity transition. */
   lastSwap: { generation: string; at: string } | null;
