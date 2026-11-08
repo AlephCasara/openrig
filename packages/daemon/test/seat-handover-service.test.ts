@@ -816,7 +816,8 @@ describe("SeatHandoverService", () => {
     queue.update({ qitemId: child.qitemId, actorSession: "dev-qa@seat-rig", state: "done", closureReason: "no-follow-on", transitionNote: "QA passed" });
     await queue.create({ sourceSession: "orch-lead@seat-rig", destinationSession: "dev-qa@seat-rig", body: "Unrelated worker task" });
 
-    const result = await service.handover({ seatRef: "dev-impl@seat-rig", source: "fresh", reason: "context-wall" });
+    // The CLI accepts a logical seat alias, while queue destinations use canonical session names.
+    const result = await service.handover({ seatRef: "dev.impl", source: "fresh", reason: "context-wall" });
     expect(result.ok, JSON.stringify(result)).toBe(true);
     const packet = sendText.mock.calls[0]?.[1] as string;
     expect(packet).toContain("Durable queue replay");

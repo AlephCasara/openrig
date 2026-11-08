@@ -619,12 +619,12 @@ export class SeatHandoverService {
       let queueReplay: string[] | undefined;
       if (this.queueRepo) {
         try {
-          queueReplay = queueHandoverReplay(this.queueRepo, this.db, input.seatRef);
+          queueReplay = queueHandoverReplay(this.queueRepo, this.db, latestSession.session_name);
         } catch (error) {
           // Snapshot failure must not block the successor's real context handover.
           const reason = error instanceof Error ? error.message : String(error);
           queueReplay = [`--- Durable queue replay unavailable: ${reason.slice(0, 160)} ---`,
-            `Inspect the live queue directly: rig queue list --destination ${input.seatRef}`];
+            `Inspect the live queue directly: rig queue list --destination ${latestSession.session_name}`];
         }
       }
       const delivered = await this.deliverRestorePacket(launch.tmuxSession, {
