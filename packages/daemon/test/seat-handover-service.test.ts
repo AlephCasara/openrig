@@ -15,6 +15,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { SeatHandoverService } from "../src/domain/seat-handover-service.js";
+import { QueueRepository } from "../src/domain/queue-repository.js";
 import { WatchdogAutoRegistration } from "../src/domain/watchdog-auto-registration.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
 import { WatchdogHistoryLog } from "../src/domain/watchdog-history-log.js";
@@ -26,7 +27,6 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { observeCodexSandbox } from "../src/domain/permission-drift.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
-import { QueueRepository } from "../src/domain/queue-repository.js";
 import { DefaultOccupantInvalidator, type OccupantInvalidator } from "../src/domain/occupant-invalidator.js";
 import { managedBlockText } from "../src/domain/managed-blocks.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
@@ -119,6 +119,7 @@ describe("SeatHandoverService", () => {
     return new SeatHandoverService({
       codexPermissions: { currentCodexPermissions },
       db,
+      queueRepo: new QueueRepository(db, eventBus),
       rigRepo,
       sessionRegistry,
       discoveryRepo,
@@ -804,6 +805,27 @@ describe("SeatHandoverService", () => {
     expect(launchHarness).toHaveBeenCalledTimes(1);
     const successorBinding = launchHarness.mock.calls[0]![0] as { codexConfigProfile?: string };
     expect(successorBinding.codexConfigProfile).toBe("prod-sandboxed");
+  });
+
+  it("replays open queue obligations, their latest notes and child status to a fresh successor", async () => {
+    seedSeat();
+    const queue = new QueueRepository(db, eventBus);
+    const parent = await queue.create({ sourceSession: "orch-lead@seat-rig", destinationSession: "dev-impl@seat-rig", body: "Implement replay guard", summary: "Verify PR and QA before delegation" });
+    queue.update({ qitemId: parent.qitemId, actorSession: "dev-impl@seat-rig", state: "in-progress", transitionNote: "commit produced; QA remains pending" });
+    const child = await queue.create({ sourceSession: "dev-impl@seat-rig", destinationSession: "dev-qa@seat-rig", handedOffFrom: parent.qitemId, body: "Validate behavior" });
+    queue.update({ qitemId: child.qitemId, actorSession: "dev-qa@seat-rig", state: "done", closureReason: "no-follow-on", transitionNote: "QA passed" });
+    await queue.create({ sourceSession: "orch-lead@seat-rig", destinationSession: "dev-qa@seat-rig", body: "Unrelated worker task" });
+
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", source: "fresh", reason: "context-wall" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    const packet = sendText.mock.calls[0]?.[1] as string;
+    expect(packet).toContain("Durable queue replay");
+    expect(packet).toContain(parent.qitemId);
+    expect(packet).toContain("commit produced; QA remains pending");
+    expect(packet).toContain(`child ${child.qitemId} [done]`);
+    expect(packet).toContain("actual branch commits, existing GitHub PRs and reviews");
+    expect(packet).not.toContain("Unrelated worker task");
+    expect(queue.getById(parent.qitemId)?.state).toBe("in-progress");
   });
 
   it("composes the full cycle for a fresh source: create -> deliver -> verify -> rebind", async () => {

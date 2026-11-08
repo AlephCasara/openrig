@@ -146,6 +146,7 @@ function handoverDeps(c: Context): ConstructorParameters<typeof SeatHandoverServ
   return {
     codexPermissions: (c.get("currentModelReader" as never) as import("../domain/model-divergence/current-model-reader.js").CurrentModelReader | undefined) ?? undefined,
     db: rigRepo.db,
+    queueRepo: (c.get("queueRepo" as never) as QueueRepository | undefined) ?? undefined,
     rigRepo,
     sessionRegistry: c.get("sessionRegistry" as never) as SessionRegistry,
     discoveryRepo: c.get("discoveryRepo" as never) as DiscoveryRepository,

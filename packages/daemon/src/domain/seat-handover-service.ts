@@ -11,6 +11,8 @@ import type { RigRepository } from "./rig-repository.js";
 import { SessionAddressConflict, type SessionRegistry } from "./session-registry.js";
 import type { DiscoveryRepository } from "./discovery-repository.js";
 import type { EventBus } from "./event-bus.js";
+import type { QueueRepository } from "./queue-repository.js";
+import { queueHandoverReplay } from "./queue-handover-replay.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { SeatStatusService, type SeatStatus, type SeatStatusResult } from "./seat-status-service.js";
@@ -159,6 +161,8 @@ interface BindingOwnerRow {
 
 interface SeatHandoverServiceDeps {
   db: Database.Database;
+  /** Durable queue for a fresh successor's bounded obligation replay. */
+  queueRepo?: QueueRepository;
   rigRepo: RigRepository;
   sessionRegistry: SessionRegistry;
   discoveryRepo: DiscoveryRepository;
@@ -245,6 +249,7 @@ interface SeatHandoverServiceDeps {
 }
 
 export class SeatHandoverService {
+  private queueRepo: QueueRepository | null;
   private codexPermissions: SeatHandoverServiceDeps["codexPermissions"];
   private db: Database.Database;
   private statusService: SeatStatusService;
@@ -274,6 +279,7 @@ export class SeatHandoverService {
     if (deps.db !== deps.discoveryRepo.db) throw new Error("SeatHandoverService: discoveryRepo must share the same db handle");
     if (deps.db !== deps.eventBus.db) throw new Error("SeatHandoverService: eventBus must share the same db handle");
     this.codexPermissions = deps.codexPermissions;
+    this.queueRepo = deps.queueRepo ?? null;
     this.db = deps.db;
     this.rigRepo = deps.rigRepo;
     this.sessionRegistry = deps.sessionRegistry;
@@ -610,6 +616,17 @@ export class SeatHandoverService {
       // B16 — the recap was resolved at step 1b (pre-launch); an unavailable verdict rides the
       // packet as a NAMED line, never a silent omission.
       const resolved = "recap" in predecessorRecapResolution ? predecessorRecapResolution : null;
+      let queueReplay: string[] | undefined;
+      if (this.queueRepo) {
+        try {
+          queueReplay = queueHandoverReplay(this.queueRepo, this.db, input.seatRef);
+        } catch (error) {
+          // Snapshot failure must not block the successor's real context handover.
+          const reason = error instanceof Error ? error.message : String(error);
+          queueReplay = [`--- Durable queue replay unavailable: ${reason.slice(0, 160)} ---`,
+            `Inspect the live queue directly: rig queue list --destination ${input.seatRef}`];
+        }
+      }
       const delivered = await this.deliverRestorePacket(launch.tmuxSession, {
         runtime: node.runtime,
         seatRef: input.seatRef,
@@ -622,6 +639,7 @@ export class SeatHandoverService {
         ...(authoredRecapInfo ?? {}),
         ...(guidanceNote ? { guidanceNote } : {}),
         startupFiles,
+        queueReplay,
       });
       if (!delivered.ok) {
         // Partial: the successor is live in the preserved pane but the context packet never landed —
@@ -1088,6 +1106,7 @@ export class SeatHandoverService {
       authoredRecapAbsentReason?: string;
       guidanceNote?: string;
       startupFiles?: SeatStartupTextFile[];
+      queueReplay?: string[];
     },
   ): Promise<RestorePacketDelivery> {
     const packet = buildRestorePacket({ ...info, handoverAt: this.now().toISOString() });
@@ -1532,6 +1551,8 @@ export function buildRestorePacket(info: {
   guidanceNote?: string;
   /** #2456: the seat's send_text startup files, listed first so the successor reads them before the predecessor's context. */
   startupFiles?: SeatStartupTextFile[];
+  /** Read-only bounded snapshot of the durable queue at successor launch. */
+  queueReplay?: string[];
 }): string {
   const captured = info.capturedContext.trim();
   const startup = startupFilesSection(info.startupFiles ?? []);
@@ -1543,6 +1564,7 @@ export function buildRestorePacket(info: {
     `Handover at: ${info.handoverAt}`,
     "",
     ...(startup.length > 0 ? [...startup, ""] : []),
+    ...(info.queueReplay?.length ? [...info.queueReplay, ""] : []),
     "--- Predecessor terminal (captured) ---",
     captured.length > 0 ? captured : "(no capture available)",
   ];
