@@ -229,6 +229,8 @@ export interface RiggedConfig {
     pickupStallThresholdMinutes: number;
     stuckSweepIntervalSeconds: number;
     stuckSweepUnclaimedAgeMinutes: number;
+    stuckSweepNoProgressOrchestratorMinutes: number;
+    stuckSweepNoProgressImplementerMinutes: number;
     wakeRetryIntervalSeconds: number;
     wakeRetryCap: number;
     wakeUnconfirmedWindowMinutes: number;
@@ -422,6 +424,8 @@ const DEFAULTS = {
     pickupStallThresholdMinutes: 3,
     stuckSweepIntervalSeconds: 300,
     stuckSweepUnclaimedAgeMinutes: 60,
+    stuckSweepNoProgressOrchestratorMinutes: 15,
+    stuckSweepNoProgressImplementerMinutes: 30,
     wakeRetryIntervalSeconds: 300,
     wakeRetryCap: 3,
     wakeUnconfirmedWindowMinutes: 30,
@@ -572,6 +576,8 @@ export const VALID_KEYS = [
   // S02 — standing-stuck-sweep cadence + unclaimed-obligation age; same lockstep.
   "queue.stuck_sweep_interval_seconds",
   "queue.stuck_sweep_unclaimed_age_minutes",
+  "queue.stuck_sweep_no_progress_orchestrator_minutes",
+  "queue.stuck_sweep_no_progress_implementer_minutes",
   // S01 — wake-or-escalate ladder: retry cadence + cap, F1 window, F2 swap grace.
   "queue.wake_retry_interval_seconds",
   "queue.wake_retry_cap",
@@ -692,6 +698,8 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "queue.pickup_stall_threshold_minutes": { primary: "OPENRIG_QUEUE_PICKUP_STALL_THRESHOLD_MINUTES" },
   "queue.stuck_sweep_interval_seconds": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_INTERVAL_SECONDS" },
   "queue.stuck_sweep_unclaimed_age_minutes": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_UNCLAIMED_AGE_MINUTES" },
+  "queue.stuck_sweep_no_progress_orchestrator_minutes": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_ORCHESTRATOR_MINUTES" },
+  "queue.stuck_sweep_no_progress_implementer_minutes": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_IMPLEMENTER_MINUTES" },
   "queue.wake_retry_interval_seconds": { primary: "OPENRIG_QUEUE_WAKE_RETRY_INTERVAL_SECONDS" },
   "queue.wake_retry_cap": { primary: "OPENRIG_QUEUE_WAKE_RETRY_CAP" },
   "queue.wake_unconfirmed_window_minutes": { primary: "OPENRIG_QUEUE_WAKE_UNCONFIRMED_WINDOW_MINUTES" },
@@ -797,6 +805,8 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "queue.pickup_stall_threshold_minutes": ["queue", "pickupStallThresholdMinutes"],
   "queue.stuck_sweep_interval_seconds": ["queue", "stuckSweepIntervalSeconds"],
   "queue.stuck_sweep_unclaimed_age_minutes": ["queue", "stuckSweepUnclaimedAgeMinutes"],
+  "queue.stuck_sweep_no_progress_orchestrator_minutes": ["queue", "stuckSweepNoProgressOrchestratorMinutes"],
+  "queue.stuck_sweep_no_progress_implementer_minutes": ["queue", "stuckSweepNoProgressImplementerMinutes"],
   "queue.wake_retry_interval_seconds": ["queue", "wakeRetryIntervalSeconds"],
   "queue.wake_retry_cap": ["queue", "wakeRetryCap"],
   "queue.wake_unconfirmed_window_minutes": ["queue", "wakeUnconfirmedWindowMinutes"],
@@ -1186,6 +1196,8 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   "queue.pickup_stall_threshold_minutes": positiveIntegerConstraint("queue.pickup_stall_threshold_minutes"),
   "queue.stuck_sweep_interval_seconds": positiveIntegerConstraint("queue.stuck_sweep_interval_seconds"),
   "queue.stuck_sweep_unclaimed_age_minutes": positiveIntegerConstraint("queue.stuck_sweep_unclaimed_age_minutes"),
+  "queue.stuck_sweep_no_progress_orchestrator_minutes": positiveIntegerConstraint("queue.stuck_sweep_no_progress_orchestrator_minutes"),
+  "queue.stuck_sweep_no_progress_implementer_minutes": positiveIntegerConstraint("queue.stuck_sweep_no_progress_implementer_minutes"),
   // S01 — wake-or-escalate ladder knobs (same positive-integer contract).
   "queue.wake_retry_interval_seconds": positiveIntegerConstraint("queue.wake_retry_interval_seconds"),
   "queue.wake_retry_cap": positiveIntegerConstraint("queue.wake_retry_cap"),
@@ -1455,6 +1467,8 @@ export class ConfigStore {
         pickupStallThresholdMinutes: v("queue.pickup_stall_threshold_minutes") as number,
         stuckSweepIntervalSeconds: v("queue.stuck_sweep_interval_seconds") as number,
         stuckSweepUnclaimedAgeMinutes: v("queue.stuck_sweep_unclaimed_age_minutes") as number,
+        stuckSweepNoProgressOrchestratorMinutes: v("queue.stuck_sweep_no_progress_orchestrator_minutes") as number,
+        stuckSweepNoProgressImplementerMinutes: v("queue.stuck_sweep_no_progress_implementer_minutes") as number,
         wakeRetryIntervalSeconds: v("queue.wake_retry_interval_seconds") as number,
         wakeRetryCap: v("queue.wake_retry_cap") as number,
         wakeUnconfirmedWindowMinutes: v("queue.wake_unconfirmed_window_minutes") as number,

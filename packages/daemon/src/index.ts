@@ -18,6 +18,10 @@ import {
   runStuckSweep,
 } from "./domain/queue-stuck-sweep.js";
 import {
+  createRuntimeQueueNoProgressDetector,
+  resolveQueueNoProgressWindowMinutes,
+} from "./domain/queue-no-progress.js";
+import {
   createWakeLadderStatus,
   makePromptStateReader,
   resolveWakeRetryIntervalSeconds,
@@ -167,12 +171,25 @@ export function startStuckSweepScheduler(deps: {
   rigRepo: { db: import("better-sqlite3").Database };
   queueRepo?: import("./domain/queue-repository.js").QueueRepository;
   stuckSweepStatus?: import("./domain/queue-stuck-sweep.js").StuckSweepStatus;
+  sessionRegistry?: Pick<import("./domain/session-registry.js").SessionRegistry, "findResumeContextByName" | "getBindingForNode">;
+  tmuxAdapter?: Pick<import("./adapters/tmux.js").TmuxAdapter, "capturePaneScreen">;
+  contextUsageStore?: Pick<import("./domain/context-usage-store.js").ContextUsageStore, "readSidecar" | "readCodexTranscriptPath">;
+  agentActivityStore?: Pick<import("./domain/agent-activity-store.js").AgentActivityStore, "getLatestForNode">;
 }): ReturnType<typeof setInterval> | null {
   const queueRepo = deps.queueRepo;
   if (!queueRepo) return null;
   const status = createStuckSweepStatus();
   deps.stuckSweepStatus = status; // healthz reads this snapshot
   const db = deps.rigRepo.db;
+  const noProgressDetector = deps.sessionRegistry && deps.tmuxAdapter && deps.contextUsageStore
+    ? createRuntimeQueueNoProgressDetector({
+        db,
+        sessionRegistry: deps.sessionRegistry,
+        tmuxAdapter: deps.tmuxAdapter,
+        contextUsageStore: deps.contextUsageStore,
+        ...(deps.agentActivityStore ? { agentActivityStore: deps.agentActivityStore } : {}),
+      })
+    : undefined;
   // A pass yields the event loop, so a tick could start a second pass over the first one (a pass longer than the
   // interval): one pass at a time, and a tick that finds one still running is skipped.
   let runningSince: string | null = null;
@@ -190,7 +207,18 @@ export function startStuckSweepScheduler(deps: {
     status.pass({ runningSince, skippedTicks: 0 });
     // runStuckSweep never throws (failure is recorded loudly on the status surface);
     // the catch is the never-crash-the-daemon belt for the promise chain itself.
-    void runStuckSweep({ db, queueRepo, status }).catch((err: unknown) => {
+    void runStuckSweep({
+      db,
+      queueRepo,
+      status,
+      ...(noProgressDetector
+        ? {
+            noProgressDetector,
+            resolveNoProgressWindowMinutes: (destinationSession: string) =>
+              resolveQueueNoProgressWindowMinutes(db, destinationSession),
+          }
+        : {}),
+    }).catch((err: unknown) => {
       console.error(`[stuck-sweep] scheduler error: ${err instanceof Error ? err.message : String(err)}`);
     }).finally(() => { runningSince = null; status.pass({ runningSince: null, skippedTicks: skipped }); });
   };
