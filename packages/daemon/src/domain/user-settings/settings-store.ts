@@ -243,6 +243,8 @@ export const SETTINGS_VALID_KEYS = [
   // Same lockstep contract as the pickup key.
   "queue.stuck_sweep_interval_seconds",
   "queue.stuck_sweep_unclaimed_age_minutes",
+  "queue.stuck_sweep_no_progress_orchestrator_minutes",
+  "queue.stuck_sweep_no_progress_implementer_minutes",
   // S01 (OPR.0.5.5.1) — wake-or-escalate ladder: retry cadence + cap, the F1
   // unconfirmed-confirmation window, and the F2 post-swap grace. Same lockstep contract.
   "queue.wake_retry_interval_seconds",
@@ -364,6 +366,8 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "queue.pickup_stall_threshold_minutes": { primary: "OPENRIG_QUEUE_PICKUP_STALL_THRESHOLD_MINUTES" },
   "queue.stuck_sweep_interval_seconds": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_INTERVAL_SECONDS" },
   "queue.stuck_sweep_unclaimed_age_minutes": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_UNCLAIMED_AGE_MINUTES" },
+  "queue.stuck_sweep_no_progress_orchestrator_minutes": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_ORCHESTRATOR_MINUTES" },
+  "queue.stuck_sweep_no_progress_implementer_minutes": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_IMPLEMENTER_MINUTES" },
   "queue.wake_retry_interval_seconds": { primary: "OPENRIG_QUEUE_WAKE_RETRY_INTERVAL_SECONDS" },
   "queue.wake_retry_cap": { primary: "OPENRIG_QUEUE_WAKE_RETRY_CAP" },
   "queue.wake_unconfirmed_window_minutes": { primary: "OPENRIG_QUEUE_WAKE_UNCONFIRMED_WINDOW_MINUTES" },
@@ -467,6 +471,8 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "queue.pickup_stall_threshold_minutes": ["queue", "pickupStallThresholdMinutes"],
   "queue.stuck_sweep_interval_seconds": ["queue", "stuckSweepIntervalSeconds"],
   "queue.stuck_sweep_unclaimed_age_minutes": ["queue", "stuckSweepUnclaimedAgeMinutes"],
+  "queue.stuck_sweep_no_progress_orchestrator_minutes": ["queue", "stuckSweepNoProgressOrchestratorMinutes"],
+  "queue.stuck_sweep_no_progress_implementer_minutes": ["queue", "stuckSweepNoProgressImplementerMinutes"],
   "queue.wake_retry_interval_seconds": ["queue", "wakeRetryIntervalSeconds"],
   "queue.wake_retry_cap": ["queue", "wakeRetryCap"],
   "queue.wake_unconfirmed_window_minutes": ["queue", "wakeUnconfirmedWindowMinutes"],
@@ -789,6 +795,8 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "queue.pickup_stall_threshold_minutes": return 3;
     case "queue.stuck_sweep_interval_seconds": return 300;
     case "queue.stuck_sweep_unclaimed_age_minutes": return 60;
+    case "queue.stuck_sweep_no_progress_orchestrator_minutes": return 15;
+    case "queue.stuck_sweep_no_progress_implementer_minutes": return 30;
     case "queue.wake_retry_interval_seconds": return 300;
     case "queue.wake_retry_cap": return 3;
     case "queue.wake_unconfirmed_window_minutes": return 30;
@@ -1036,6 +1044,8 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
   "queue.pickup_stall_threshold_minutes": positiveIntegerConstraint("queue.pickup_stall_threshold_minutes"),
   "queue.stuck_sweep_interval_seconds": positiveIntegerConstraint("queue.stuck_sweep_interval_seconds"),
   "queue.stuck_sweep_unclaimed_age_minutes": positiveIntegerConstraint("queue.stuck_sweep_unclaimed_age_minutes"),
+  "queue.stuck_sweep_no_progress_orchestrator_minutes": positiveIntegerConstraint("queue.stuck_sweep_no_progress_orchestrator_minutes"),
+  "queue.stuck_sweep_no_progress_implementer_minutes": positiveIntegerConstraint("queue.stuck_sweep_no_progress_implementer_minutes"),
   // S01 — wake-or-escalate ladder knobs (same positive-integer contract).
   "queue.wake_retry_interval_seconds": positiveIntegerConstraint("queue.wake_retry_interval_seconds"),
   "queue.wake_retry_cap": positiveIntegerConstraint("queue.wake_retry_cap"),

@@ -65,6 +65,8 @@ function clearEnv(): () => void {
     "OPENRIG_FEED_SUBSCRIPTIONS_AUDIT_LOG",
     "OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED",
     "OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS",
+    "OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_ORCHESTRATOR_MINUTES",
+    "OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_IMPLEMENTER_MINUTES",
     "OPENRIG_POLICIES_CLAUDE_COMPACTION_PREPARATION_ROOT",
     "OPENRIG_POLICIES_CLAUDE_COMPACTION_ENABLED",
     "OPENRIG_POLICIES_CLAUDE_COMPACTION_THRESHOLD_PERCENT",
@@ -222,6 +224,8 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       // S02 — standing-stuck-sweep cadence + unclaimed-obligation age.
       "queue.stuck_sweep_interval_seconds",
       "queue.stuck_sweep_unclaimed_age_minutes",
+      "queue.stuck_sweep_no_progress_orchestrator_minutes",
+      "queue.stuck_sweep_no_progress_implementer_minutes",
       // S01 — wake-or-escalate ladder knobs.
       "queue.wake_retry_interval_seconds",
       "queue.wake_retry_cap",
@@ -482,6 +486,16 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       source: "default",
       defaultValue: 60,
     });
+    expect(store.resolveWithSource("queue.stuck_sweep_no_progress_orchestrator_minutes" as never)).toMatchObject({
+      value: 15,
+      source: "default",
+      defaultValue: 15,
+    });
+    expect(store.resolveWithSource("queue.stuck_sweep_no_progress_implementer_minutes" as never)).toMatchObject({
+      value: 30,
+      source: "default",
+      defaultValue: 30,
+    });
   });
 
   it("queue integer settings reject partial and fractional strings", () => {
@@ -490,12 +504,33 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       "queue.pickup_stall_threshold_minutes",
       "queue.stuck_sweep_interval_seconds",
       "queue.stuck_sweep_unclaimed_age_minutes",
+      "queue.stuck_sweep_no_progress_orchestrator_minutes",
+      "queue.stuck_sweep_no_progress_implementer_minutes",
     ]) {
       for (const raw of ["3junk", "60.5"]) {
         expect(() => store.set(key, raw), `${key} must reject ${raw}`)
           .toThrow(/positive integer/i);
       }
     }
+  });
+
+  it("resolves per-role no-progress windows through file, env, and invalid-env fallback", () => {
+    const store = new ConfigStore(configPath);
+    store.set("queue.stuck_sweep_no_progress_orchestrator_minutes", "18");
+    store.set("queue.stuck_sweep_no_progress_implementer_minutes", "36");
+    process.env.OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_ORCHESTRATOR_MINUTES = "9";
+    process.env.OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_IMPLEMENTER_MINUTES = "21";
+    expect(store.resolveWithSource("queue.stuck_sweep_no_progress_orchestrator_minutes"))
+      .toMatchObject({ value: 9, source: "env" });
+    expect(store.resolveWithSource("queue.stuck_sweep_no_progress_implementer_minutes"))
+      .toMatchObject({ value: 21, source: "env" });
+
+    process.env.OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_ORCHESTRATOR_MINUTES = "0";
+    process.env.OPENRIG_QUEUE_STUCK_SWEEP_NO_PROGRESS_IMPLEMENTER_MINUTES = "bad";
+    expect(store.resolveWithSource("queue.stuck_sweep_no_progress_orchestrator_minutes"))
+      .toMatchObject({ value: 18, source: "file" });
+    expect(store.resolveWithSource("queue.stuck_sweep_no_progress_implementer_minutes"))
+      .toMatchObject({ value: 36, source: "file" });
   });
 
   it("W2c idle-gate-qitem cadence resolves env over file", () => {

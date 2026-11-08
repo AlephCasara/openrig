@@ -34,6 +34,12 @@ import { createLinkedSuccessorLookup, deriveCrossHostSuccessorId, hasLinkedSucce
 import { stalledPickupFinding } from "./queue-pickup.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { loadHostRegistry } from "./hosts/hosts-registry-reader.js";
+import {
+  resolveQueueNoProgressWindowMinutes,
+  type NoProgressDecision,
+  type NoProgressDiagnosis,
+  type QueueNoProgressDetector,
+} from "./queue-no-progress.js";
 
 export const STUCK_SWEEP_INTERVAL_KEY = "queue.stuck_sweep_interval_seconds";
 export const DEFAULT_STUCK_SWEEP_INTERVAL_SECONDS = 300;
@@ -99,6 +105,7 @@ export type StuckFindingKind =
   | "undelivered-wake"
   | "undelivered-human-notice"
   | "unclaimed-obligation"
+  | "no-progress"
   | "dangling-closure";
 
 /** Idempotency key: one open finding row per (stuck row, finding kind). */
@@ -216,6 +223,11 @@ export interface StuckSweepDeps {
    *  or two of the owning ladder's own retry intervals, whichever is longer. Injectable for
    *  tests; the default reads the ladder's existing setting. */
   ladderSuppressionMinutes?: number;
+  /** Report-only runtime/terminal no-progress detector. Optional for direct-construction
+   *  harnesses; production wires one persistent detector so T/2 observations survive passes. */
+  noProgressDetector?: QueueNoProgressDetector;
+  /** Role-specific no-progress window. Injectable for deterministic tests. */
+  resolveNoProgressWindowMinutes?: (destinationSession: string) => number;
 }
 
 export interface StuckSweepFindingAction {
@@ -385,6 +397,7 @@ interface Candidate {
    *  or below this timestamp; newer evidence earns one new finding. */
   evidenceAt: string;
   why: string;
+  diagnosis?: NoProgressDiagnosis;
   verificationTargets?: string[];
   /** unconsumed-wait only: the watchdog job whose notice found it (its rule is keyed by the job). */
   jobId?: string;
@@ -532,6 +545,7 @@ function evidenceBody(db: Database.Database, c: Candidate): string {
     `row: ${c.row.qitemId}\n` +
     `destination: ${c.row.destinationSession} (source ${c.row.sourceSession}, state ${c.row.state})\n` +
     `age: ${c.ageMinutes} min\n` +
+    (c.diagnosis ? `diagnosis: ${c.diagnosis}\n` : "") +
     `last transition: ${lastTransitionLine(db, c.row.qitemId)}\n` +
     `why: ${c.why}\n` +
     `Resolve the underlying row; the sweep closes this finding itself once the row is no longer stuck.`
@@ -597,6 +611,10 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     };
     const isRegisteredHost = deps.isRegisteredHost ?? defaultIsRegisteredHost(log);
     const candidates: Candidate[] = [];
+    const noProgressDecisions = new Map<string, NoProgressDecision>();
+    const noProgressDetector = deps.noProgressDetector;
+    const noProgressWindow = deps.resolveNoProgressWindowMinutes
+      ?? ((session: string) => resolveQueueNoProgressWindowMinutes(deps.db, session));
     const nowIso = now.toISOString();
     // SQLite's LIKE ignores ASCII case; the per-row rules below match the queries they stand in for.
     const startsWithCI = (value: string | null | undefined, prefix: string): boolean => (value ?? "").toLowerCase().startsWith(prefix);
@@ -880,6 +898,54 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       };
     };
 
+    /** Issue #4 — two-pass report-only no-progress evaluation. The detector owns observation
+     *  memory; this adapter owns queue truth, role windows and routing. */
+    const noProgressCandidate = async (qitemId: string): Promise<Candidate | null> => {
+      if (!noProgressDetector) return null;
+      const row = indexed(() => deps.queueRepo.getById(qitemId));
+      if (!row || isFindingRow(row) || row.state !== "in-progress") return null;
+      const meaningful = lastMeaningfulTransition(deps.db, row.qitemId);
+      const windowMinutes = noProgressWindow(row.destinationSession);
+      const decision = await noProgressDetector.inspect({
+        qitemId: row.qitemId,
+        destinationSession: row.destinationSession,
+        state: row.state,
+        lastMeaningfulAt: meaningful?.at ?? null,
+        closureRequiredAt: row.closureRequiredAt,
+        now,
+        windowMinutes,
+      });
+      othersMayHaveRun();
+      noProgressDecisions.set(qitemId, decision);
+      if (decision.state !== "finding") return null;
+
+      const ownerRoute = resolveOrch(row.destinationSession, row) ?? row.destinationSession;
+      const operator = decision.diagnosis === "needs-input"
+        ? (deps.resolveOperatorSeat ?? resolveOperatorSeat)()
+        : null;
+      const route = operator ?? ownerRoute;
+      const routeReason = decision.diagnosis === "needs-input"
+        ? operator
+          ? `; pending input routes to human/operator seat ${operator}`
+          : "; pending input detected but workspace.operator_seat_name is unset; routed to the owning lead/seat"
+        : "";
+      const s = decision.sample;
+      return {
+        kind: "no-progress",
+        row,
+        route,
+        ageMinutes: wholeMinutesSince(meaningful?.at ?? row.tsUpdated, now),
+        // Detection time is the evidence watermark for this stall episode. Runtime progress can
+        // resolve a finding without a queue transition; a later frozen episode must be allowed
+        // to create a new row even when lastMeaningfulChange itself did not move.
+        evidenceAt: nowIso,
+        diagnosis: decision.diagnosis,
+        why: `${decision.reason}; role window=${windowMinutes} min; runtime=${s.runtime}; `
+          + `pane=${s.paneState}/${s.paneReason}; transcript size=${s.transcriptSize ?? "unknown"}; `
+          + `hook=${s.hookRawEvent ?? "none"}/${s.hookRawSubtype ?? "none"}${routeReason}`,
+      };
+    };
+
     const armedJobOf = (qitemId: string): string | undefined => (deps.db.prepare(
       "SELECT wake_ref FROM queue_transition_wakes WHERE qitem_id = ? AND phase = 'armed' ORDER BY transition_id DESC LIMIT 1",
     ).get(qitemId) as { wake_ref: string } | undefined)?.wake_ref;
@@ -906,6 +972,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
           return c?.kind === kind ? c : null;
         }
         case "unclaimed-obligation": return unclaimedCandidate(id, false);
+        case "no-progress": return null; // async rule; handled explicitly at create/resolution boundaries
         case "dangling-closure": return custodyCandidate(id, (source, target) => hasLinkedSuccessor(deps.db, source, target), true);
         default: return null;
       }
@@ -949,6 +1016,16 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       .all() as Array<{ qitem_id: string }>) {
       if (dueToYield()) await yieldLoop();
       const c = stalledCandidate(qitem_id);
+      if (c) candidates.push(c);
+    }
+
+    const inProgressIds = (deps.db
+      .prepare("SELECT qitem_id FROM queue_items WHERE state = 'in-progress'")
+      .all() as Array<{ qitem_id: string }>).map((row) => row.qitem_id);
+    noProgressDetector?.retainOnly(inProgressIds);
+    for (const qitemId of inProgressIds) {
+      if (dueToYield()) await yieldLoop();
+      const c = await noProgressCandidate(qitemId);
       if (c) candidates.push(c);
     }
 
@@ -1115,15 +1192,19 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     // new one is created durable + waking (the create path's default nudge).
     const findings: StuckSweepFindingAction[] = [];
     const liveDedupTags = new Set<string>();
-    const candidateIds = new Set(candidates.map((c) => c.row.qitemId));
+    const candidateKeys = new Set(candidates.map((c) => `${c.kind}:${c.row.qitemId}`));
     // A finding that could not be created (a row whose destination no longer resolves, say) must not
     // stop the others: it is reported, its row stays detected, and the pass is still a failure.
     const failedCreates: string[] = [];
-    for (const c of [...new Map(candidates.map(c => [c.row.qitemId, c])).values()]) {
+    const routeKey = (c: Candidate): string => `${c.kind === "no-progress" ? "no-progress" : "shared"}:${c.row.qitemId}`;
+    for (const c of [...new Map(candidates.map(c => [routeKey(c), c])).values()]) {
       if (dueToYield()) await yieldLoop();
       const dedupTag = findingDedupTag(c.kind, c.row.qitemId);
       const shared = recoveries.find(c.row.qitemId);
       const sharedRow = shared ? indexed(() => deps.queueRepo.getById(shared.qitemId)) : null;
+      // no-progress is an independent report-only diagnosis and may route to a human. It
+      // must coexist with the older source-recovery row rather than be swallowed by it.
+      const sharedCanOwnCandidate = c.kind !== "no-progress";
       // A later accepted deadline can expire after the previous finding closed.
       // Its newer time is fresh evidence even when the pickup candidate wins this row.
       // An OPEN recovery still owns custody.
@@ -1131,7 +1212,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
         && Date.parse(c.row.closureRequiredAt ?? "") <= now.getTime()
         && !["pending", "in-progress", "blocked"].includes(sharedRow.state)
         && evidenceIsNewer(c.row.closureRequiredAt ?? "", sharedRow.tsUpdated);
-      if (shared && !renewedDeadline) {
+      if (shared && !renewedDeadline && sharedCanOwnCandidate) {
         const existingTags = sharedRow?.tags ?? [];
         for (const tag of existingTags) if (tag.startsWith("stuck-sweep:")) liveDedupTags.add(tag);
         // Keep the original evidence as history, but do not leave it presented as
@@ -1181,11 +1262,15 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
         // the escalation note and hop recorded at listing belong to that route; keep only what this run records
         routeNotes.delete(c.row.qitemId);
         routed.delete(c.row.qitemId);
-        const now_ = freshCandidate(c.kind, c.row.qitemId, c.jobId);
+        const now_ = c.kind === "no-progress"
+          ? await noProgressCandidate(c.row.qitemId)
+          : freshCandidate(c.kind, c.row.qitemId, c.jobId);
         if (!now_) continue;
         routeCandidate(now_); // its destination, reason and targets as they are now
         const input = {
-          qitemId: recoveryId(deps.db, c.row.qitemId, renewedDeadline ? c.row.closureRequiredAt! : undefined),
+          ...(c.kind === "no-progress" ? {} : {
+            qitemId: recoveryId(deps.db, c.row.qitemId, renewedDeadline ? c.row.closureRequiredAt! : undefined),
+          }),
           // The detector is machinery, not a seat: the obligation's own creator is the
           // finding's source (the workflow-exception precedent).
           sourceSession: c.row.sourceSession,
@@ -1195,7 +1280,10 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
             ? custodyHeadline(c.row.qitemId, now_.verificationTargets, now_.ageMinutes)
             : `Stuck sweep: ${c.kind} on ${c.row.qitemId} (${now_.ageMinutes} min)`,
           evidenceRef: `rig queue show ${c.row.qitemId}`,
-          tags: [STUCK_SWEEP_FINDING_TAG, dedupTag, recoveryTag(c.row.qitemId),
+          // Report-only findings must not claim recovery custody. A recovery-for tag
+          // would also make unrelated wake/claim logic treat this report as the owner.
+          tags: [STUCK_SWEEP_FINDING_TAG, dedupTag,
+            ...(c.kind === "no-progress" ? [] : [recoveryTag(c.row.qitemId)]),
             ...(routed.has(c.row.qitemId) || now_.row.tags?.includes(ESCALATION_HOP_TAG) ? [ESCALATION_HOP_TAG] : [])],
           // OpenRig's own finding, whoever created the stuck row.
           wakeTrigger: "openrig" as const,
@@ -1241,6 +1329,23 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       // grace stops new detection, and an open stall recovery stays open, so the ceiling's expiry stays actionable.
       if (kind === "stalled-after-claim" && stuckId && deps.queueRepo.getById(stuckId)?.pickup?.grace) continue;
       let resolution = "no longer detected";
+      if (kind === "no-progress" && stuckId) {
+        if (!noProgressDetector) continue;
+        const source = indexed(() => deps.queueRepo.getById(stuckId));
+        if (source?.state === "in-progress") {
+          let decision = noProgressDecisions.get(stuckId);
+          if (!decision) {
+            await noProgressCandidate(stuckId);
+            decision = noProgressDecisions.get(stuckId);
+          }
+          // Missing probe/capture evidence does not prove recovery; retain the report until
+          // the source makes observable progress or leaves in-progress.
+          if (!decision || decision.state === "inconclusive" || decision.state === "finding") continue;
+          resolution = decision.reason === "queue_progress" ? "queue progress resumed" : "runtime progress resumed";
+        } else {
+          resolution = source ? `source left in-progress (${source.state})` : "source row no longer exists";
+        }
+      }
       if (stuckId && (kind === "undelivered-wake" || kind === "undelivered-human-notice" || kind === "unclaimed-obligation")) {
         const evidence = deliveryResolutionEvidence(deps, kind, stuckId, now);
         if (!evidence) continue;
@@ -1254,7 +1359,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       // in-progress past its deadline) during the pass still holds, so its rule runs again on the row as it is now.
       // (A row this pass did find, whose finding isn't live because another recovery now holds its custody, closes as
       // the base closed it.)
-      if (kind && stuckId && resolvedByRule.has(kind) && !candidateIds.has(stuckId) && ruleHolds(kind as StuckFindingKind, stuckId)) continue;
+      if (kind && stuckId && resolvedByRule.has(kind) && !candidateKeys.has(`${kind}:${stuckId}`) && ruleHolds(kind as StuckFindingKind, stuckId)) continue;
       await deps.queueRepo.update({
         qitemId: f.qitem_id,
         // The sweep performed this transition; ownership stays on the existing row.
