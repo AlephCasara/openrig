@@ -52,6 +52,50 @@ function app(db: Database.Database) {
 afterEach(() => { for (const db of databases.splice(0))
     db.close(); });
 describe("finite telemetry history", () => {
+    it("returns a bounded newest retained sample for the passive TUI without moving forward cursors", () => {
+        const db = fixture();
+        events(db, 20);
+        transitions(db, 20);
+        archive(db, 0, 8);
+        for (const [stream, key] of [["events", "seq"], ["queue-transitions", "transitionId"]] as const) {
+            const first = readTelemetryPage(db, source, stream, { start: "retained", limit: "16" }, time);
+            expect(first.rows.map(row => row[key])).toEqual(Array.from({ length: 16 }, (_, i) => String(i + 1)));
+            expect(first.page.hasMore).toBe(true);
+            const recent = readTelemetryPage(db, source, stream, { start: "recent", limit: "16" }, time);
+            expect(recent.rows.map(row => row[key])).toEqual(Array.from({ length: 16 }, (_, i) => String(i + 5)));
+            expect(recent.page).toMatchObject({ returned: 16, hasMore: false, nextCursor: null, through: "20" });
+            expect(recent.coverage).toMatchObject({ status: "partial", historyCompleteness: "unknown",
+                gaps: [{ code: "older_retained_history_not_read", from: "1", through: "4" }] });
+            const continued = readTelemetryPage(db, source, stream, { cursor: first.page.nextCursor! }, time);
+            expect(continued.rows.map(row => row[key])).toEqual(["17", "18", "19", "20"]);
+        }
+    });
+    it("preserves overlapping active/archive IDs and reports conflicts in a recent tail", () => {
+        const db = fixture();
+        transitions(db, 20);
+        db.prepare(`INSERT INTO queue_transitions_archive
+      (transition_id,qitem_id,ts,state,transition_note,actor_session,archived_at)
+      SELECT transition_id,qitem_id,ts,state,transition_note,actor_session,? FROM queue_transitions WHERE transition_id >= 15`).run(time);
+        db.exec("UPDATE queue_transitions_archive SET state = 'done' WHERE transition_id = 20");
+        const recent = readTelemetryPage(db, source, "queue-transitions", { start: "recent", limit: "16" }, time);
+        expect(recent.rows.map(row => row.transitionId)).toEqual(Array.from({ length: 15 }, (_, i) => String(i + 5)));
+        expect(recent.page).toMatchObject({ scanned: 16, withheld: 1, returned: 15, hasMore: false, nextCursor: null });
+        expect(recent.coverage.gaps).toContainEqual({ code: "conflicting_transition_id", id: "20" });
+        expect(recent.coverage.gaps).toContainEqual({ code: "older_retained_history_not_read", from: "1", through: "4" });
+    });
+    it("distinguishes skipped older retention from a missing ID within a recent sample", () => {
+        const db = fixture();
+        events(db, 20);
+        transitions(db, 20);
+        db.exec("DELETE FROM events WHERE seq = 12");
+        db.exec("DELETE FROM queue_transitions WHERE transition_id = 12");
+        for (const [stream, key] of [["events", "seq"], ["queue-transitions", "transitionId"]] as const) {
+            const recent = readTelemetryPage(db, source, stream, { start: "recent", limit: "16" }, time);
+            expect(recent.rows.map(row => row[key])).toEqual(Array.from({ length: 17 }, (_, i) => String(i + 4)).filter(id => id !== "12"));
+            expect(recent.coverage.gaps).toContainEqual({ code: "older_retained_history_not_read", from: "1", through: "3" });
+            expect(recent.coverage.gaps).toContainEqual({ code: "retained_sequence_gap", from: "12", through: "12" });
+        }
+    });
     it("starts at the high watermark, then reads one new window with decimal IDs intact", () => {
         const db = fixture();
         events(db, 1);

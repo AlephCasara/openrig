@@ -54,8 +54,11 @@ const tenureFields = [field("node_id", "nodeId"), field("generation_uuid", "gene
 // current-owner join, or history window function enters this projection.
 export const TELEMETRY_PAGE_SQL = {
     events: `SELECT CAST(seq AS TEXT) AS _id, ${eventFields} FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?`,
+    recentEvents: `SELECT CAST(seq AS TEXT) AS _id, ${eventFields} FROM events WHERE seq <= ? ORDER BY seq DESC LIMIT ?`,
     active: `SELECT CAST(transition_id AS TEXT) AS _id, ${transitionFields} FROM queue_transitions WHERE transition_id > ? AND transition_id <= ? ORDER BY transition_id LIMIT ?`,
     archive: `SELECT CAST(transition_id AS TEXT) AS _id, ${transitionFields} FROM queue_transitions_archive WHERE transition_id > ? AND transition_id <= ? ORDER BY transition_id LIMIT ?`,
+    recentActive: `SELECT CAST(transition_id AS TEXT) AS _id, ${transitionFields} FROM queue_transitions WHERE transition_id <= ? ORDER BY transition_id DESC LIMIT ?`,
+    recentArchive: `SELECT CAST(transition_id AS TEXT) AS _id, ${transitionFields} FROM queue_transitions_archive WHERE transition_id <= ? ORDER BY transition_id DESC LIMIT ?`,
     tenures: `SELECT CAST(generation_ordinal AS TEXT) AS _id, ${tenureFields} FROM occupant_tenures WHERE node_id = ? AND generation_ordinal < ? AND generation_ordinal <= ? ORDER BY generation_ordinal DESC LIMIT ?`,
 };
 function id(value: unknown): value is string {
@@ -117,8 +120,8 @@ export function readTelemetryPage(db: Database.Database, source: TelemetrySource
         throw new TelemetryInputError("Unsupported filter for telemetry stream");
     if (input.cursor !== undefined && input.start !== undefined)
         throw new TelemetryInputError("Use cursor or start, not both");
-    if (input.start !== undefined && !["latest", "retained"].includes(input.start))
-        throw new TelemetryInputError("start must be latest or retained");
+    if (input.start !== undefined && !["latest", "retained", "recent"].includes(input.start))
+        throw new TelemetryInputError("start must be latest, retained or recent");
     if (stream === "tenures" && input.start !== undefined)
         throw new TelemetryInputError("Tenures start newest first; use a cursor to continue");
     const limit = input.limit === undefined ? (stream === "tenures" ? 32 : 128) : Number(input.limit);
@@ -147,7 +150,8 @@ export function readTelemetryPage(db: Database.Database, source: TelemetrySource
         let gapCount = 0;
         const gap = (entry: Gap) => { gapCount++; if (gaps.length < 32)
             gaps.push(entry); };
-        const startLatest = stream !== "tenures" && !previous && input.start !== "retained";
+        const startRecent = stream !== "tenures" && !previous && input.start === "recent";
+        const startLatest = stream !== "tenures" && !previous && input.start !== "retained" && !startRecent;
         let last = previous?.last ?? (startLatest ? high : "0");
         const requestedAfter = stream === "tenures" ? null : last;
         const through = previous?.through ?? high;
@@ -179,15 +183,32 @@ export function readTelemetryPage(db: Database.Database, source: TelemetrySource
             const args = [BigInt(last), BigInt(through), limit] as const;
             let candidates: Row[];
             if (stream === "events")
-                candidates = db.prepare(TELEMETRY_PAGE_SQL.events).all(...args) as Row[];
+                candidates = db.prepare(startRecent ? TELEMETRY_PAGE_SQL.recentEvents : TELEMETRY_PAGE_SQL.events)
+                    .all(...(startRecent ? [BigInt(through), limit] : args)) as Row[];
             else if (stream === "tenures") {
                 // An inclusive first page avoids max-int + 1 overflowing the SQLite binding.
                 const query = previous ? TELEMETRY_PAGE_SQL.tenures : TELEMETRY_PAGE_SQL.tenures.replace("generation_ordinal < ? AND ", "");
                 candidates = db.prepare(query).all(...(previous ? [nodeId, BigInt(last), BigInt(through), limit] : [nodeId, BigInt(through), limit])) as Row[];
             }
             else {
-                candidates = [...db.prepare(TELEMETRY_PAGE_SQL.active).all(...args), ...db.prepare(TELEMETRY_PAGE_SQL.archive).all(...args)] as Row[];
+                candidates = startRecent
+                    ? [...db.prepare(TELEMETRY_PAGE_SQL.recentActive).all(BigInt(through), limit),
+                        ...db.prepare(TELEMETRY_PAGE_SQL.recentArchive).all(BigInt(through), limit)] as Row[]
+                    : [...db.prepare(TELEMETRY_PAGE_SQL.active).all(...args), ...db.prepare(TELEMETRY_PAGE_SQL.archive).all(...args)] as Row[];
                 candidates.sort((a, b) => BigInt(a._id) < BigInt(b._id) ? -1 : BigInt(a._id) > BigInt(b._id) ? 1 : 0);
+            }
+            if (startRecent) {
+                // A one-shot bounded tail, oldest to newest for the existing gap/row processing.
+                // No cursor changes: retained/latest remain forward-only collector windows.
+                candidates.sort((a, b) => BigInt(a._id) < BigInt(b._id) ? -1 : BigInt(a._id) > BigInt(b._id) ? 1 : 0);
+                // Preserve all overlapping active/archive projections for conflict detection.
+                const selectedIds = new Set([...new Set(candidates.map(row => row._id))].slice(-limit));
+                candidates = candidates.filter(row => selectedIds.has(row._id));
+                if (candidates.length) {
+                    last = (BigInt(candidates[0]!._id) - 1n).toString();
+                    if (low && BigInt(low) < BigInt(candidates[0]!._id))
+                        gap({ code: "older_retained_history_not_read", from: low, through: last });
+                } else last = high;
             }
             fetched = candidates.length;
             for (let i = 0; i < candidates.length && scanned < limit; i++) {
@@ -246,7 +267,7 @@ export function readTelemetryPage(db: Database.Database, source: TelemetrySource
                 gap({ code: "requested_tenure_window_unavailable" });
         }
         let hasMore = false;
-        if (!reset && !startLatest) {
+        if (!reset && !startLatest && !startRecent) {
             hasMore = stream === "tenures" ? low !== null && BigInt(last) > BigInt(low) : BigInt(last) < BigInt(through);
             if (hasMore && !capReason)
                 capReason = "source_row_limit";
@@ -254,7 +275,7 @@ export function readTelemetryPage(db: Database.Database, source: TelemetrySource
         const page = {
             requestedAfter, requestedBefore: stream === "tenures" ? previous?.last ?? null : null,
             lastScanned: last, through, retainedHighWatermark: high, hasMore,
-            nextCursor: reset ? null : stream === "tenures" ? (hasMore ? cursor(last, through) : null) : cursor(last, hasMore ? through : null),
+            nextCursor: reset || startRecent ? null : stream === "tenures" ? (hasMore ? cursor(last, through) : null) : cursor(last, hasMore ? through : null),
             restartCursor: reset ? (stream === "tenures" ? null : cursor(high, null)) : null,
             fetched, scanned, filtered, withheld, returned: rows.length, capReason,
         };

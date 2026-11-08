@@ -17,6 +17,12 @@ Events and transitions initially return an empty checkpoint at the current high
 watermark, with `historical_events_not_read` or `historical_transitions_not_read`.
 Use `--start retained` to request the retained past. Tenures start with the newest
 32 records for the immutable node ID, with a descending continuation when needed.
+Use `--start recent` for a one-shot, ascending display of the newest bounded
+retained events or transitions (for example, the TUI's latest 16). It returns no
+continuation cursor and `hasMore: false`; this describes the sampled tail, not
+complete history. Earlier retained rows omitted by this read produce an
+`older_retained_history_not_read` coverage gap. Use `retained` and cursors for
+history traversal or collection.
 An empty match set can still have more source records: check `page.hasMore` and
 `page.nextCursor`. The cursor binds the stream and filters; retain the same filter
 options when continuing. Do not use `--start` with `--cursor`.
@@ -30,8 +36,8 @@ These reads use the daemon's existing browser/access boundary:
 
 | GET path | Query parameters |
 | --- | --- |
-| `/api/telemetry/v1/events` | `cursor`, `limit`, `start=latest\|retained`, `nodeId`, `rigId` |
-| `/api/telemetry/v1/queue-transitions` | `cursor`, `limit`, `start=latest\|retained`, `qitemId` |
+| `/api/telemetry/v1/events` | `cursor`, `limit`, `start=latest\|retained\|recent`, `nodeId`, `rigId` |
+| `/api/telemetry/v1/queue-transitions` | `cursor`, `limit`, `start=latest\|retained\|recent`, `qitemId` |
 | `/api/telemetry/v1/nodes/:nodeId/tenures` | `cursor`, `limit` |
 
 The envelope contains `schemaVersion: 1`, `stream`, `observedAt`, `source`, `rows`,

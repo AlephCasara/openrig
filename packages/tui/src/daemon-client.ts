@@ -268,8 +268,8 @@ export class DaemonClient {
       }
     };
     const [events, transitions] = await Promise.all([
-      read("/api/telemetry/v1/events?start=retained&limit=16", "events"),
-      read("/api/telemetry/v1/queue-transitions?start=retained&limit=16", "queue-transitions"),
+      read("/api/telemetry/v1/events?start=recent&limit=16", "events"),
+      read("/api/telemetry/v1/queue-transitions?start=recent&limit=16", "queue-transitions"),
     ]);
     // Tenure history has a required node ID; use a passive inventory lookup with a strict sample cap.
     // A missing inventory is recorded separately, never interpreted as absence of tenures.

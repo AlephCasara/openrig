@@ -42,8 +42,8 @@ describe("System → Telemetry passive read", () => {
     expect(rendered).toContain("billing USD");
     expect(rendered).toContain("Exporter health: unavailable");
     expect(calls).toEqual([
-      "GET /api/telemetry/v1/events?start=retained&limit=16",
-      "GET /api/telemetry/v1/queue-transitions?start=retained&limit=16",
+      "GET /api/telemetry/v1/events?start=recent&limit=16",
+      "GET /api/telemetry/v1/queue-transitions?start=recent&limit=16",
       "GET /api/ps", "GET /api/telemetry/runtime/summary?rigId=rig%2F1", "GET /api/rigs/rig%2F1/nodes", "GET /api/telemetry/v1/nodes/node%2F1/tenures?limit=16",
     ]);
     expect(SYSTEM_SECTIONS).toContain("telemetry");
@@ -82,8 +82,8 @@ describe("System → Telemetry passive read", () => {
     expect(data.tenures).toMatchObject({ status: "unavailable", reason: expect.stringMatching(/multiple rigs|ambiguous/i) });
     expect(telemetryLines(data, 120).map(l => l.text).join("\n")).toMatch(/multiple rigs|ambiguous/i);
     expect(calls).toEqual([
-      "/api/telemetry/v1/events?start=retained&limit=16",
-      "/api/telemetry/v1/queue-transitions?start=retained&limit=16",
+      "/api/telemetry/v1/events?start=recent&limit=16",
+      "/api/telemetry/v1/queue-transitions?start=recent&limit=16",
       "/api/ps",
     ]);
   });
@@ -106,8 +106,8 @@ describe("System → Telemetry passive read", () => {
     expect(data.runtime).toMatchObject({ status: "available" });
     expect(data.tenures).toMatchObject({ status: "unavailable", reason: expect.stringMatching(/multiple nodes|ambiguous/i) });
     expect(calls).toEqual([
-      "/api/telemetry/v1/events?start=retained&limit=16",
-      "/api/telemetry/v1/queue-transitions?start=retained&limit=16",
+      "/api/telemetry/v1/events?start=recent&limit=16",
+      "/api/telemetry/v1/queue-transitions?start=recent&limit=16",
       "/api/ps",
       "/api/telemetry/runtime/summary?rigId=rig-1",
       "/api/rigs/rig-1/nodes",
