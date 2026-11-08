@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Command } from "commander";
@@ -112,6 +112,22 @@ describe("rig context recap-age", () => {
       const result = await run(["recap-age", "lead-dev-a", "--rig", "r1", "--since", "qitem-foreign", "--json"]);
       expect(result.exitCode).toBe(1);
       expect(result.errLogs.join("\n")).toMatch(/qitem-foreign.*lead\.dev-a|lead\.dev-a.*qitem-foreign/i);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a symlinked RECAP.md instead of accepting the target mtime", async () => {
+    const f = await fixture();
+    try {
+      const outside = join(f.root, "outside-recap.md");
+      writeFileSync(outside, "## Recent Decisions\noutside state\n");
+      rmSync(f.recapPath);
+      symlinkSync(outside, f.recapPath);
+
+      const result = await run(["recap-age", "lead-dev-a", "--rig", "r1", "--json"]);
+      expect(result.exitCode).toBe(1);
+      expect(result.errLogs.join("\n")).toMatch(/RECAP\.md.*regular file|regular file.*RECAP\.md|symlink/i);
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }

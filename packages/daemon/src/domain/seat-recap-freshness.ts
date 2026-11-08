@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { RECAP_FILENAME } from "./context-packs/seat-recap-store.js";
@@ -95,7 +95,13 @@ export function readSeatRecapAge(
   });
   const recapPath = join(resolved.seatDir, RECAP_FILENAME);
   let recapWrittenAt: string | null = null;
-  try { recapWrittenAt = new Date(statSync(recapPath).mtimeMs).toISOString(); }
+  try {
+    const recapStat = lstatSync(recapPath);
+    if (!recapStat.isFile()) {
+      throw new Error(`Refusing recap freshness check for '${recapPath}': RECAP.md must be a regular file and may not be a symlink.`);
+    }
+    recapWrittenAt = new Date(recapStat.mtimeMs).toISOString();
+  }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type Database from "better-sqlite3";
@@ -63,5 +63,18 @@ describe("authored recap freshness", () => {
       rigName: "my-rig",
       since: "qitem-foreign",
     })).toThrow(/qitem-foreign.*lead\.dev-a|lead\.dev-a.*qitem-foreign/i);
+  });
+
+  it("rejects a symlinked RECAP.md instead of following its target", () => {
+    const outside = join(topologyRoot, "outside-recap.md");
+    writeFileSync(outside, "## Recent Decisions\noutside state\n");
+    rmSync(recapPath);
+    symlinkSync(outside, recapPath);
+
+    expect(() => readSeatRecapAge(db, {
+      topologyRoot,
+      seatRef: "lead.dev-a",
+      rigName: "my-rig",
+    })).toThrow(/RECAP\.md.*regular file|regular file.*RECAP\.md|symlink/i);
   });
 });
