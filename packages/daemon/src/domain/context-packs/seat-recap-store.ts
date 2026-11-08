@@ -26,7 +26,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { validateMarkdownAddressability, parseMarkdownSections } from "../markdown-address.js";
-import { resolveTopologySeat, TopologySeatResolutionError } from "../topology-seat-resolution.js";
+import { assertTopologySeatsRootPresent, resolveTopologySeat, TopologySeatResolutionError } from "../topology-seat-resolution.js";
 
 export const RECAP_FILENAME = "RECAP.md";
 const CHAIN_DIRNAME = "recap-superseded";
@@ -153,7 +153,13 @@ export function writeSeatRecapAt(opts: { db: Database.Database; topologyRoot: st
     throw error;
   }
   const seatDir = resolved.seatDir;
-  mkdirSync(seatDir, { recursive: true });
+  try {
+    assertTopologySeatsRootPresent(opts.topologyRoot, resolved.rigName);
+  } catch (error) {
+    if (error instanceof TopologySeatResolutionError) throw new RecapWriteError(error.message);
+    throw error;
+  }
+  if (!existsSync(seatDir)) mkdirSync(seatDir);
   writeSeatRecap({ seatDir, content: opts.content, now: opts.now });
   return { path: join(seatDir, RECAP_FILENAME), superseded: listRecapChain(seatDir).length };
 }

@@ -122,8 +122,12 @@ recap is kept byte-for-byte under `recap-superseded/`. A recap that isn't addres
 is refused; the other content checks are advisory. Seat references resolve through the registered
 node inventory, accepting a logical id, canonical session name or unique session member while
 mapping all of them to the same verified topology folder. Unknown refs fail with valid logical ids;
-unmapped `seats/` folders are surfaced as orphans. `rig context recap-age <seat>` compares the
-current recap mtime with an explicit time/qitem or, by default, the seat's latest queue activity.
+unmapped `seats/` folders are surfaced as orphans, while a symlinked `seats/` root is refused rather
+than traversed. A write may create the registered seat folder only under an already-present real
+`rigs/<rig>/seats` parent; it never provisions a missing rig tree. Compatibility folders shared by
+more than one registered seat are rejected as ambiguous. `rig context recap-age <seat>` compares the
+current recap mtime with an explicit time/qitem or, by default, the seat's latest queue activity; an
+explicit qitem must belong to that resolved seat.
 Fresh-launch planning and execution carry a warning when that recap is missing or stale.
 
 `packages/daemon/src/domain/skill-catalog.ts` resolves a seat's skill loadout from the

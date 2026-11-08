@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { RECAP_FILENAME } from "./context-packs/seat-recap-store.js";
 import { resolveTopologySeat, type ResolvedTopologySeat } from "./topology-seat-resolution.js";
+import { deriveCanonicalSessionName } from "./session-name.js";
 
 export interface RecapReference {
   kind: "qitem" | "time" | "latest-queue";
@@ -19,10 +20,29 @@ export interface SeatRecapAge {
   status: "missing" | "uncompared" | "ok" | "stale";
 }
 
-function qitemReference(db: Database.Database, qitemId: string): RecapReference | null {
-  const row = db.prepare("SELECT qitem_id, ts_created FROM queue_items WHERE qitem_id = ?").get(qitemId) as
-    { qitem_id: string; ts_created: string } | undefined;
-  return row ? { kind: "qitem", qitemId: row.qitem_id, at: row.ts_created } : null;
+function queueDestinationsForSeat(seat: ResolvedTopologySeat): Set<string> {
+  const destinations = new Set<string>([seat.canonicalSessionName]);
+  const dot = seat.logicalId.indexOf(".");
+  if (dot > 0 && dot < seat.logicalId.length - 1) {
+    destinations.add(deriveCanonicalSessionName(
+      seat.logicalId.slice(0, dot),
+      seat.logicalId.slice(dot + 1),
+      seat.rigName,
+    ));
+  }
+  return destinations;
+}
+
+function qitemReference(db: Database.Database, qitemId: string, seat: ResolvedTopologySeat): RecapReference | null {
+  const row = db.prepare("SELECT qitem_id, ts_created, destination_session FROM queue_items WHERE qitem_id = ?").get(qitemId) as
+    { qitem_id: string; ts_created: string; destination_session: string } | undefined;
+  if (!row) return null;
+  if (!queueDestinationsForSeat(seat).has(row.destination_session)) {
+    throw new Error(
+      `Queue item '${qitemId}' belongs to '${row.destination_session}', not registered seat '${seat.logicalId}' in rig '${seat.rigName}'.`,
+    );
+  }
+  return { kind: "qitem", qitemId: row.qitem_id, at: row.ts_created };
 }
 
 function latestQueueReference(db: Database.Database, canonicalSessionName: string): RecapReference | null {
@@ -53,9 +73,9 @@ function latestQueueReference(db: Database.Database, canonicalSessionName: strin
   }
 }
 
-function explicitReference(db: Database.Database, since: string): RecapReference {
+function explicitReference(db: Database.Database, since: string, seat: ResolvedTopologySeat): RecapReference {
   const trimmed = since.trim();
-  const qitem = qitemReference(db, trimmed);
+  const qitem = qitemReference(db, trimmed, seat);
   if (qitem) return qitem;
   if (/^qitem-/.test(trimmed)) throw new Error(`Queue item '${trimmed}' was not found.`);
   const ms = Date.parse(trimmed);
@@ -80,7 +100,7 @@ export function readSeatRecapAge(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const reference = input.since !== undefined
-    ? explicitReference(db, input.since)
+    ? explicitReference(db, input.since, resolved)
     : input.latestQueue === false
       ? null
       : latestQueueReference(db, resolved.canonicalSessionName);

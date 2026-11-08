@@ -94,4 +94,26 @@ describe("rig context recap-age", () => {
       rmSync(f.root, { recursive: true, force: true });
     }
   });
+
+  it("rejects --since when the qitem belongs to another seat", async () => {
+    const f = await fixture();
+    const dbPath = process.env["OPENRIG_DB"]!;
+    const sqlite = (await import("better-sqlite3")).default;
+    const live = new sqlite(dbPath);
+    try {
+      live.prepare(`INSERT INTO queue_items
+        (qitem_id, ts_created, ts_updated, source_session, destination_session, state, priority, body)
+        VALUES (?, ?, ?, ?, ?, 'pending', 'routine', 'fixture')`)
+        .run("qitem-foreign", "2026-11-08T06:30:00Z", "2026-11-08T06:30:00Z", "supervisor@external", "qa-other@r1");
+    } finally {
+      live.close();
+    }
+    try {
+      const result = await run(["recap-age", "lead-dev-a", "--rig", "r1", "--since", "qitem-foreign", "--json"]);
+      expect(result.exitCode).toBe(1);
+      expect(result.errLogs.join("\n")).toMatch(/qitem-foreign.*lead\.dev-a|lead\.dev-a.*qitem-foreign/i);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
 });

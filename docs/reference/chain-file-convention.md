@@ -104,7 +104,8 @@ returns the structured result, including the resolved seat and orphan folders.
 
 `rig context recap-age <seat> [--rig <rig>] [--since <time-or-qitem>]` reports
 the current `RECAP.md` write time and whether it is stale. `--since <qitem>`
-compares against that queue item's creation time; without `--since`, the command
+compares against that queue item's creation time only when the qitem is assigned
+to the resolved seat; unrelated qitems are rejected. Without `--since`, the command
 uses the seat's latest queue activity. `rig seat launch --fresh` and its plan
 surface warn when the authored recap is missing or older than that activity so
 a fresh occupant does not silently inherit stale handover context.

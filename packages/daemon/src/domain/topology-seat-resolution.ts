@@ -93,6 +93,31 @@ function assertSafeAncestors(topologyRoot: string, rigName: string): void {
   }
 }
 
+/** Recap writes may create a missing seat folder, but never provision the rig's
+ * topology tree. Both parent directories must already be real directories. */
+export function assertTopologySeatsRootPresent(topologyRoot: string, rigName: string): string {
+  assertSegment("rig", rigName);
+  assertSafeAncestors(topologyRoot, rigName);
+  const rigDir = path.join(topologyRoot, "rigs", rigName);
+  const seatsRoot = path.join(rigDir, "seats");
+  for (const [label, candidate] of [["rig", rigDir], ["seats", seatsRoot]] as const) {
+    const state = directoryState(candidate);
+    if (state === "missing") {
+      throw new TopologySeatResolutionError(
+        "unsafe_topology_path",
+        `physical topology ${label} directory '${candidate}' does not exist; refusing to provision it implicitly`,
+      );
+    }
+    if (state === "unsafe") {
+      throw new TopologySeatResolutionError(
+        "unsafe_topology_path",
+        `unsafe topology ${label} directory '${candidate}' — it is a symlink or not a directory`,
+      );
+    }
+  }
+  return seatsRoot;
+}
+
 export function listRegisteredTopologySeats(
   db: Database.Database,
   rigName?: string,
@@ -183,7 +208,20 @@ export function resolveTopologySeat(
     if (memberState === "unsafe") {
       throw new TopologySeatResolutionError("unsafe_topology_path", `unsafe seat directory '${memberDir}' — it is a symlink or not a directory`, validLogicalIds);
     }
-    if (memberState === "directory") folderName = member;
+    if (memberState === "directory") {
+      const conflicting = registered.filter((other) => {
+        if (other.nodeId === entry.nodeId) return false;
+        return other.logicalId === member || sessionMember(other) === member;
+      });
+      if (conflicting.length > 0) {
+        throw new TopologySeatResolutionError(
+          "seat_ambiguous",
+          `Seat '${ref}' has an ambiguous compatibility folder '${member}'; it is also claimed by registered seat(s): ${conflicting.map((other) => `${other.logicalId}@${other.rigName}`).join(", ")}.`,
+          validLogicalIds,
+        );
+      }
+      folderName = member;
+    }
   }
   return {
     rigId: entry.rigId,
@@ -207,6 +245,7 @@ export function listOrphanTopologySeatFolders(
   db: Database.Database,
   input: { topologyRoot: string; rigName: string },
 ): OrphanTopologySeatFolder[] {
+  assertSafeAncestors(input.topologyRoot, input.rigName);
   const registered = listRegisteredTopologySeats(db, input.rigName);
   const claimed = new Set<string>();
   for (const entry of registered) {

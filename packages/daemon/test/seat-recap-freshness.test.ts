@@ -27,11 +27,11 @@ describe("authored recap freshness", () => {
     rmSync(topologyRoot, { recursive: true, force: true });
   });
 
-  function qitem(id: string, created: string): void {
+  function qitem(id: string, created: string, destination = "lead-dev-a@my-rig"): void {
     db.prepare(`INSERT INTO queue_items
       (qitem_id, ts_created, ts_updated, source_session, destination_session, state, priority, body)
       VALUES (?, ?, ?, ?, ?, 'pending', 'routine', 'fixture')`)
-      .run(id, created, created, "supervisor@external", "lead-dev-a@my-rig");
+      .run(id, created, created, "supervisor@external", destination);
   }
 
   it("is stale iff the recap predates the selected qitem creation", () => {
@@ -53,5 +53,15 @@ describe("authored recap freshness", () => {
     const age = readSeatRecapAge(db, { topologyRoot, seatRef: "lead.dev-a", rigName: "my-rig" });
     expect(age).toMatchObject({ status: "missing", stale: true, reference: { kind: "latest-queue", qitemId: "qitem-latest" } });
     expect(staleRecapWarning(age)).toMatch(/No authored recap/);
+  });
+
+  it("rejects an explicit qitem owned by another seat", () => {
+    qitem("qitem-foreign", "2026-11-08T06:00:00Z", "qa-other@my-rig");
+    expect(() => readSeatRecapAge(db, {
+      topologyRoot,
+      seatRef: "lead.dev-a",
+      rigName: "my-rig",
+      since: "qitem-foreign",
+    })).toThrow(/qitem-foreign.*lead\.dev-a|lead\.dev-a.*qitem-foreign/i);
   });
 });
