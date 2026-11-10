@@ -31,7 +31,15 @@ References: https://github.com/block/buzz/tree/main/crates/buzz-cli and https://
 - send receipt refusal unless the relay reports acceptance and a valid event ID;
 - channel and thread parsing suitable for later inbox integration.
 
-Tests are deterministic and use an injected runner. They do **not** establish authenticity of a message, network reachability, retry correctness, or live interoperability.
+Tests cover both an injected runner and a real local child process with a CLI-shaped executable (stdin, stdout, exit failures and timeout). The optional loopback smoke test exercises a **real upstream Buzz 1.0.0 CLI** against a strictly local fake HTTP relay. It verifies signed Nostr event structure, accepted send receipts, threaded replies and reading messages through this adapter without starting OpenRig.
+
+Run the optional test after obtaining the upstream Buzz CLI executable (e.g. unpack the Linux release archive into a private scratch directory without installing it):
+
+```sh
+BUZZ_CLI_BIN=/absolute/path/to/buzz node --import tsx scripts/buzz-cli-loopback-smoke.mjs
+```
+
+The test binds to `127.0.0.1` on a dynamically selected port, generates an ephemeral signing key, explicitly overrides relay settings and closes its HTTP server afterward. **Its relay is simulated**, so it does **not** establish relay-side signature verification, real Buzz authentication/permissions, network resilience, durable replay, inbound human authorization or real end-to-end interoperability.
 
 ## Required before a production integration
 
