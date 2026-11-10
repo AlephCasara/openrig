@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { GatewayWire } from "./gateway-subsystem.js";
+import { DispatchBuffer } from "./dispatch-buffer.js";
 
 export type GatewayProviderName = "slack" | "buzz";
 
@@ -154,10 +155,27 @@ export interface GatewayProviderFactories {
   buzzPreflight?: (settings: BuzzGatewaySettings) => BuzzPreflight;
 }
 
+/** Refuse cross-provider replay before a destination is reached. */
+export function assertProviderPendingCompatible(home: string, provider: GatewayProviderName, channelId?: string): void {
+  for (const decision of new DispatchBuffer(home).pending()) {
+    const payload: unknown = decision.payload;
+    const buzz = record(payload) && record(payload.buzzTransport) ? payload.buzzTransport : null;
+    if (provider === "slack") {
+      if (buzz) throw new Error("pending Buzz decisions require reconciliation before switching to Slack");
+    } else if (!buzz || buzz.schemaVersion !== 1 || buzz.channelId !== channelId) {
+      throw new Error("pending Slack/relay/foreign Buzz decisions require reconciliation before selecting Buzz");
+    }
+  }
+}
+
 /** Compose exactly ONE provider; no fallback from explicit Buzz to Slack. */
 export function buildSelectedGatewayWire(options: GatewayProviderFactories): GatewayWire {
   const chosen = options.settings?.() ?? loadGatewayProviderSettings(options.home);
-  if (chosen.provider === "slack") return options.slack();
+  if (chosen.provider === "slack") {
+    assertProviderPendingCompatible(options.home, "slack");
+    return options.slack();
+  }
+  assertProviderPendingCompatible(options.home, "buzz", chosen.buzz?.channelId);
   if (!chosen.buzz) throw new Error("Buzz gateway selected without connector configuration");
   const readiness = (options.buzzPreflight ?? buzzGatewayPreflight)(chosen.buzz);
   if (!readiness.ready) {

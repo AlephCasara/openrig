@@ -163,6 +163,7 @@ export async function runRealRelaySmoke({ cli, baseUrl, owner, guest, outsider, 
     });
     assert.ok(rawUnsigned.status >= 400, "Unauthenticated/tampered event must be refused");
     console.log(`PASS: unsigned direct HTTP mutation refused (HTTP ${rawUnsigned.status}; cannot isolate signature vs auth).`);
+    return { channelId };
   } finally {
     const restore = (name, old) => old === undefined ? delete process.env[name] : process.env[name] = old;
     restore("BUZZ_PRIVATE_KEY", original.key);

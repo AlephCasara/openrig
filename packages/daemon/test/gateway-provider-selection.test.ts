@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { GatewaySubsystem, type GatewayWire } from "../src/domain/gateway/gateway-subsystem.js";
+import { DispatchBuffer } from "../src/domain/gateway/dispatch-buffer.js";
 import {
   buildSelectedGatewayWire, buzzGatewayPreflight, gatewayProviderPath,
   loadGatewayProviderSettings, parseGatewayProviderSettings,
@@ -116,6 +117,44 @@ describe("Experimental gateway provider selection: fail closed, opt-in, no rig",
     expect(subsystem.dispatch("post", "human@kernel", {})).toMatchObject({ ok: false });
     expect(slackCalled).toBe(0);
     subsystem.stop();
+  });
+
+  it("blocks Slack startup rather than replaying a pending Buzz delivery into Slack", () => {
+    new DispatchBuffer(home).enqueue({
+      kind: "outbound_decision",
+      decisionId: "buzz-old",
+      op: "post_message",
+      entityBindingRef: "human@external",
+      payload: {
+        qitemId: "q-1", notificationKey: "q-1:e1",
+        buzzTransport: { schemaVersion: 1, channelId: validBuzz.channelId },
+      },
+    });
+    let slackCalled = 0;
+    expect(() => buildSelectedGatewayWire({
+      home,
+      slack: () => { slackCalled++; return fakeWire(); },
+    })).toThrow(/pending Buzz decisions require reconciliation/);
+    expect(slackCalled).toBe(0);
+  });
+
+  it("refuses to adopt old Slack or relay pending work in a Buzz-only wire", () => {
+    new DispatchBuffer(home).enqueue({
+      kind: "outbound_decision",
+      decisionId: "old-slack",
+      op: "post_message",
+      entityBindingRef: "human@external",
+      payload: { qitemId: "q-1" },
+    });
+    let buzzCalled = 0;
+    expect(() => buildSelectedGatewayWire({
+      home,
+      settings: buzzChoice,
+      slack: fakeWire,
+      buzz: () => { buzzCalled++; return fakeWire(); },
+      buzzPreflight: () => ({ ready: true, failures: [] }),
+    })).toThrow(/pending Slack\/relay\/foreign Buzz decisions/);
+    expect(buzzCalled).toBe(0);
   });
 
   it("does not accept secrets or unexpected config fields", () => {
