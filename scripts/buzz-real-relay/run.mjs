@@ -55,6 +55,7 @@ const env = {
   LAB_HTTP_PORT: String(port),
   LAB_RELAY_KEY: nostrIdentity().secret,
   LAB_OWNER_PUBKEY: owner.pubkey,
+  LAB_REQUIRE_RELAY_MEMBERSHIP: process.env.LAB_REQUIRE_RELAY_MEMBERSHIP ?? "true",
   BUZZ_PRIVATE_KEY: owner.secret,
   BUZZ_RELAY_URL: `http://127.0.0.1:${port}`,
   BUZZ_CONNECT_TIMEOUT_SECS: "2",
@@ -108,6 +109,7 @@ async function main() {
       owner,
       guest,
       outsider,
+      relayMembershipRequired: env.LAB_REQUIRE_RELAY_MEMBERSHIP === "true",
     });
     console.log("PASS: real upstream Buzz relay integration smoke.");
     const { runCliFaultSmoke } = await import("./fault.mjs");

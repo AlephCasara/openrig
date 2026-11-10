@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { BuzzCliClient } from "../../packages/daemon/src/domain/gateway/buzz-cli.ts";
+import { authenticatedPost } from "./auth.mjs";
 
-export async function runRealRelaySmoke({ cli, baseUrl, owner, guest, outsider }) {
+export async function runRealRelaySmoke({ cli, baseUrl, owner, guest, outsider, relayMembershipRequired = false }) {
   const original = {
     key: process.env.BUZZ_PRIVATE_KEY,
     relay: process.env.BUZZ_RELAY_URL,
@@ -93,6 +94,22 @@ export async function runRealRelaySmoke({ cli, baseUrl, owner, guest, outsider }
     ]);
     console.log("PASS: channel owner granted membership to a disposable second identity.");
 
+    if (relayMembershipRequired) {
+      const beforeInvitation = denied([
+        "messages", "send", "--channel", channelId, "--content", "-",
+      ], { secret: guest.secret, stdin: "guest-before-nip43-admission" });
+      console.log(`PASS: channel membership alone does not bypass NIP-43 (${beforeInvitation}).`);
+      const mint = await authenticatedPost(baseUrl, "/api/invites",
+        { ttl_secs: 3600, max_uses: 1 }, owner.secret);
+      assert.equal(mint.ok, true, `NIP-43 owner invite mint failed: HTTP ${mint.status} (${mint.json?.error ?? "unknown"})`);
+      assert.equal(typeof mint.json?.code, "string", "Missing relay invite code");
+      const claim = await authenticatedPost(baseUrl, "/api/invites/claim",
+        { code: mint.json.code }, guest.secret);
+      assert.equal(claim.ok, true, `NIP-43 guest invite claim failed: HTTP ${claim.status} (${claim.json?.error ?? "unknown"})`);
+      assert.ok(["joined", "already_member"].includes(claim.json?.status));
+      console.log("PASS: NIP-43 invite minted by owner and claimed by a second identity.");
+    }
+
     const guestReply = succeeded([
       "messages", "send", "--channel", channelId,
       "--content", "-", "--reply-to", sent.eventId,
@@ -126,6 +143,18 @@ export async function runRealRelaySmoke({ cli, baseUrl, owner, guest, outsider }
       /invalid Buzz Nostr event ID/,
     );
     console.log("PASS: invalid event reference blocked before network transport.");
+
+    const validReplay = await authenticatedPost(baseUrl, "/events", rawEvent, owner.secret);
+    assert.notEqual(validReplay.status, 401,
+      "Authenticated control request failed; cannot attribute tamper rejection to event signature");
+    const tamperedSignedRequest = await authenticatedPost(
+      baseUrl, "/events",
+      { ...rawEvent, content: "tampered-nostr-content-with-old-signature" }, owner.secret,
+    );
+    assert.ok(tamperedSignedRequest.status >= 400,
+      "Relay accepted a Nostr event with an invalid event signature");
+    assert.notEqual(tamperedSignedRequest.json?.accepted, true);
+    console.log(`PASS: real relay refused event with invalid Schnorr signature under separately valid NIP-98 auth (HTTP ${tamperedSignedRequest.status}; authenticated control HTTP ${validReplay.status}).`);
 
     const rawUnsigned = await fetch(baseUrl + "/events", {
       method: "POST", headers: { "content-type": "application/json" },
