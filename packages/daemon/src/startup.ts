@@ -2796,15 +2796,21 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // no drivers) — `rig slack status` names what is missing.
   const { GatewaySubsystem } = await import("./domain/gateway/gateway-subsystem.js");
   const { buildSlackGatewayWire, makeHumanReplyResolver } = await import("./domain/gateway/slack/slack-subsystem.js");
+  const { buildSelectedGatewayWire } = await import("./domain/gateway/provider-selection.js");
   const { createRelayInboundHandler } = await import("./domain/gateway/relay-inbound.js");
   const effectiveOpenRigHome = getOpenRigHome();
   const gatewaySubsystem = new GatewaySubsystem({
     home: effectiveOpenRigHome,
-    wire: () => buildSlackGatewayWire({
+    wire: () => buildSelectedGatewayWire({
       home: effectiveOpenRigHome,
-      queueRepo: queueRepoInstance,
-      resolveHumanReply: makeHumanReplyResolver(queueRepoInstance, deps.missionControlWriteContract, effectiveOpenRigHome),
-      log: (m) => console.log(`[gateway] ${m}`),
+      // Slack remains the byte-for-byte equivalent default path. Explicit Buzz
+      // selection fails closed until the outbound/inbound wire is complete.
+      slack: () => buildSlackGatewayWire({
+        home: effectiveOpenRigHome,
+        queueRepo: queueRepoInstance,
+        resolveHumanReply: makeHumanReplyResolver(queueRepoInstance, deps.missionControlWriteContract, effectiveOpenRigHome),
+        log: (m) => console.log(`[gateway] ${m}`),
+      }),
     }),
     log: (m) => console.log(`[gateway] ${m}`),
   });
