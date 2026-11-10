@@ -4,7 +4,7 @@ This is a disposable **integration-test deployment of the official Buzz relay**,
 
 ## Prerequisites
 
-- Node.js with this repository's `tsx` dependency installed (`npm ci` in the isolated checkout).
+- Node.js with this repository's `tsx` dependency installed (`npm ci` in the isolated checkout), plus the lab's pinned test-only Nostr signer (`npm ci --prefix scripts/buzz-real-relay --ignore-scripts --no-audit`). No dependency is added to the OpenRig daemon.
 - Docker Engine + Compose available to the current user.
 - An **official upstream Buzz CLI executable**. The CLI is also shipped inside Buzz 1.0.0's official Linux `.deb` (file `usr/lib/Buzz Foundation/bin/buzz`); it can be extracted to a private scratch location without a system-wide install.
 - Enough RAM/disk for four temporary backend services and one relay. Docker will cache the downloaded images even after the test containers are removed.
@@ -22,9 +22,10 @@ The launcher pulls a **pinned Buzz Linux/amd64 relay image** and pinned Silo/MC 
 - Official CLI creates an ephemeral **private** channel on a real Buzz relay.
 - NIP-98-signed message is accepted, stored and read back; returned event has the expected signer pubkey and Schnorr signature field.
 - Non-member cannot read another participant's private event (the relay may return an empty list rather than a 4xx) or write to that private channel.
-- The owner adds a second temporary pubkey to the channel; that member replies in a thread. The experimental OpenRig adapter reads both messages with correct sender and thread metadata.
+- With NIP-43 **relay membership enforcement enabled by default**, the channel owner's addition of a second temporary pubkey does **not** grant relay access. A NIP-98 authenticated owner invite is minted via `/api/invites` and claimed by the second identity via `/api/invites/claim`. Only then can that identity reply in a thread. The experimental OpenRig adapter reads both messages with correct sender and thread metadata.
 - The owner removes that member and the relay refuses subsequent messages.
 - Unknown channel, malformed key, invalid thread reference, and unauthenticated raw HTTP mutation are refused.
+- An unchanged signed Nostr event replay is accepted as an authenticated HTTP control request (HTTP 200). The **same event with altered content and its original Schnorr signature** is rejected by the real relay (HTTP 400), even though that second HTTP POST carries a fresh, valid NIP-98 signature and body hash.
 - Separately, synthetic *local HTTP fault servers* exercise 429, 503, request timeout and early disconnect. These are fault injection, not real rate limits issued by the Buzz relay.
 
 Every run generates three throwaway Nostr identity keys, one relay key, database/object-store credentials, and a random channel. **No personal credentials** should be used. Credentials are passed to child processes only through environment variables, never as CLI flags or committed test fixtures. The script redacts CLI error details and prints only bounded error categories.
@@ -33,8 +34,8 @@ Cleanup runs in `finally` using `docker compose -p <unique-project> down -v --re
 
 ## Important scope boundaries
 
-1. **Relay membership is separate from channel membership.** With `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true` (NIP-43), merely adding a pubkey to a channel does not authorize it to use the relay. This lab deliberately disables relay-wide membership enforcement to validate private-channel membership and threaded cross-identity messaging. Production designs must account for both gates.
-2. The raw unsigned, tampered event test returns 401. That confirms refusal, **not** that the relay independently detected a bad Nostr event signature after successful authentication. A dedicated authenticated tampering test remains necessary to certify signature rejection at ingest.
+1. **Relay membership is separate from channel membership.** The lab enforces `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true` (NIP-43) by default and proves that adding a pubkey to a private channel is insufficient. Its invitation + claim flow explicitly admits the identity to the relay; only then does the channel membership allow posting. `LAB_REQUIRE_RELAY_MEMBERSHIP=false` is available for isolating channel-only behavior during troubleshooting.
+2. **NIP-98 and Nostr event signatures are tested separately.** A legitimate NIP-98 request replays a previously accepted event (HTTP 200). The next NIP-98 request correctly signs its new HTTP body, but embeds the *same Nostr event with its content modified*, so that event's Schnorr signature no longer matches. The relay rejects this with HTTP 400. The separate unauthenticated mutation test returns 401.
 3. This does not establish durable queue semantics, replay after reboot, race-free pagination, receipt reconciliation, human approval, or a complete Slack replacement. Those belong to later gateway issues.
 4. No third-party websites or remote production relays receive test messages. Docker still downloads upstream container images as needed.
 5. The Buzz image is pinned to an **upstream platform-specific content digest**. To update it, review the upstream change and amend the pin deliberately. Other images should also be pinned before this harness is considered stable in CI.

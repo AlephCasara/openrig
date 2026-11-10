@@ -69,8 +69,8 @@ services:
       BUZZ_RELAY_PRIVATE_KEY: ${LAB_RELAY_KEY:?ephemeral}
       RELAY_OWNER_PUBKEY: ${LAB_OWNER_PUBKEY:?ephemeral}
       BUZZ_REQUIRE_AUTH_TOKEN: "false"
-      # Isolate per-channel private membership from the separate NIP-43 relay roster.
-      BUZZ_REQUIRE_RELAY_MEMBERSHIP: "false"
+      # Default to NIP-43 enforcement; caller may explicitly select false for diagnosis.
+      BUZZ_REQUIRE_RELAY_MEMBERSHIP: ${LAB_REQUIRE_RELAY_MEMBERSHIP:-true}
       BUZZ_ALLOW_NIP_OA_AUTH: "true"
       BUZZ_AUTO_MIGRATE: "true"
       BUZZ_GIT_CONFORMANCE_PROBE: "false"
