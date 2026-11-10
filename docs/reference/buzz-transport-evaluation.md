@@ -41,6 +41,20 @@ BUZZ_CLI_BIN=/absolute/path/to/buzz node --import tsx scripts/buzz-cli-loopback-
 
 The test binds to `127.0.0.1` on a dynamically selected port, generates an ephemeral signing key, explicitly overrides relay settings and closes its HTTP server afterward. **Its relay is simulated**, so it does **not** establish relay-side signature verification, real Buzz authentication/permissions, network resilience, durable replay, inbound human authorization or real end-to-end interoperability.
 
+## Independent real Buzz relay verification
+
+`scripts/buzz-real-relay/` contains an additional reproducible integration lab using the official relay image (pinned Linux/amd64 image digest), disposable PostgreSQL, Redis and S3, the official Buzz CLI and ephemeral identities. Run the lab with:
+
+```sh
+BUZZ_CLI_BIN=/absolute/path/to/buzz node --import tsx scripts/buzz-real-relay/run.mjs
+```
+
+The launcher publishes only the relay's dynamic localhost port, caps service CPU/memory, and removes its uniquely named Compose project/volumes on exit. No OpenRig rig, daemon, real user credential or Buzz Desktop is involved. Its tests exercise actual signed events, acknowledgements, private-channel authorization (including member addition and revocation), cross-identity threaded replies, invalid identity/channel/reference cases and adapter readback. Companion synthetic local HTTP servers exercise 429, 503, timeout and disconnect. See [the lab README](../../scripts/buzz-real-relay/README.md) for prerequisites, security details and known limitations.
+
+**Authentication caveat:** Buzz's relay-wide membership (NIP-43) and private-channel membership are independent. A test with relay-wide membership enforcement enabled denied a second channel member even after a channel-owner invitation. The current lab disables only *relay-wide* membership enforcement to test the private-channel path. A separate relay-membership provisioning scenario remains required before a production opt-in transport.
+
+**Signature caveat:** an event retrieved from the real relay has a signer pubkey and Schnorr signature field, and raw unsigned tampered HTTP submission is refused with 401. This does not by itself isolate *relay-side event-signature verification* from HTTP authorization. A dedicated authenticated tamper test is still required.
+
 ## Required before a production integration
 
 1. Obtain review agreement on provider selection and support boundary. Decide whether Buzz requires an installed CLI or a direct relay client. No app/agent auto-start.
