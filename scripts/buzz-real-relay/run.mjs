@@ -103,7 +103,7 @@ async function main() {
     await docker(["up", "-d", "--wait", "--wait-timeout", "120"]);
     await waitForRelay();
     const { runRealRelaySmoke } = await import("./check.mjs");
-    await runRealRelaySmoke({
+    const validated = await runRealRelaySmoke({
       cli,
       baseUrl: env.BUZZ_RELAY_URL,
       owner,
@@ -112,6 +112,21 @@ async function main() {
       relayMembershipRequired: env.LAB_REQUIRE_RELAY_MEMBERSHIP === "true",
     });
     console.log("PASS: real upstream Buzz relay integration smoke.");
+    const { ensureGuestChannelMember, runBuzzInboundSmoke } = await import("./inbound-queue.mjs");
+    // A revoked private-channel member can lack access to messages posted
+    // while removed; re-admit the guest BEFORE posting the queue-driven root.
+    ensureGuestChannelMember({
+      cli, baseUrl: env.BUZZ_RELAY_URL, channelId: validated.channelId, owner, guest,
+    });
+    const { runBuzzQueueSmoke } = await import("./outbound-queue.mjs");
+    const root = await runBuzzQueueSmoke({
+      cli, baseUrl: env.BUZZ_RELAY_URL,
+      channelId: validated.channelId, owner,
+    });
+    await runBuzzInboundSmoke({
+      cli, baseUrl: env.BUZZ_RELAY_URL,
+      channelId: validated.channelId, owner, guest, root,
+    });
     const { runCliFaultSmoke } = await import("./fault.mjs");
     await runCliFaultSmoke({ cli, secret: owner.secret });
     console.log("PASS: bounded error handling against four synthetic network fault modes.");
