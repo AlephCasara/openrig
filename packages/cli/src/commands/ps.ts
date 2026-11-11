@@ -744,10 +744,10 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
       // Per-row schema version preserves the existing JSON array envelope.
       schemaVersion: 1,
       // identity (rigId/rigName + logicalId + session) — disambiguates under -A.
-      rigId: n.rigId,
-      rigName: n.rigName,
-      logicalId: n.logicalId,
-      canonicalSessionName: n.canonicalSessionName,
+      rigId: n.rigId ?? null,
+      rigName: n.rigName ?? null,
+      logicalId: n.logicalId ?? null,
+      canonicalSessionName: n.canonicalSessionName ?? null,
       // Slice 13 fix 2 — host attribution rides the compact projection too; a
       // projected roster must stay attributable or partial reads as authoritative.
       hostSelfId: n.hostSelfId ?? null,
@@ -768,11 +768,11 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
       // Provenance remains on --full / --fields; the compact read keeps the served flag.
       ...(n.needsAttention === undefined ? {} : { needsAttention: n.needsAttention }),
       // lifecycle + session/startup state.
-      sessionStatus: n.sessionStatus,
-      startupStatus: n.startupStatus,
+      sessionStatus: n.sessionStatus ?? null,
+      startupStatus: n.startupStatus ?? null,
       // OPR.0.4.3.06 — challenge-verified orientation, distinct from ready.
       oriented: n.oriented ?? "n-a",
-      lifecycleState: n.lifecycleState,
+      lifecycleState: n.lifecycleState ?? null,
       // Keep the current usage limit visible without classifying it as human attention.
       agentActivity: keepDiagnostics || hasCurrentUsageLimit(n)
         ? { state: n.agentActivity?.state ?? "unknown", reason: n.agentActivity?.reason }
@@ -780,9 +780,9 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
       // Work counts. Compact keeps the base pending-only key plus the active
       // total needed for honest rendering; exact state siblings remain on
       // --full and explicit --fields.
-      hasAssignedWork: n.hasAssignedWork,
-      assignedWorkCount: n.assignedWorkCount,
-      pendingWorkCount: n.pendingWorkCount,
+      hasAssignedWork: n.hasAssignedWork ?? null,
+      assignedWorkCount: n.assignedWorkCount ?? null,
+      pendingWorkCount: n.pendingWorkCount ?? null,
       // resume summary — type + PRESENT boolean only (never the token value).
       resumeType: n.resumeType ?? null,
       resumeTokenPresent: Boolean(n.resumeToken),

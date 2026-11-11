@@ -3,6 +3,7 @@
 ## Unreleased — JSON CLI field changes
 
 - `rig ps --nodes --json` compact node rows **add** `schemaVersion: 1` (existing array/envelope stays unchanged). Structural field list and conditional-field notes are documented in `docs/reference/cli-json-compatibility.md`, with a source-projection field-name regression test. Other JSON commands have no declared schema version yet.
+- `rig ps --nodes --json` required compact-row fields `rigId`, `rigName`, `logicalId`, `canonicalSessionName`, `sessionStatus`, `startupStatus`, `lifecycleState`, `hasAssignedWork`, `assignedWorkCount`, and `pendingWorkCount` now serialize explicitly as `null` when unknown instead of disappearing from JSON. Wire-key regression coverage added.
 
 Agent-readable release notes for coding agents and human operators installing,
 upgrading, or operating OpenRig.
