@@ -8,6 +8,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { BuzzMessage } from "../buzz-cli.js";
+import { verifyBuzzNormalizedMessage } from "./verified-history.js";
 import type { InboundQueuePort, QueueItem } from "../slack/queue-access.js";
 
 const EVENT_ID = /^[0-9a-f]{64}$/i;
@@ -35,6 +36,8 @@ export interface BuzzInboundLabOpts {
   allowedHumans?: ReadonlyMap<string, string>;
   /** Production-oriented seam: resolve the CURRENT canonical registry at each poll. */
   resolveHumanPubkey?: (pubkey: string) => string | null;
+  /** Require a valid raw Nostr event, not merely the relay/CLI claimed pubkey. */
+  requireSignedEvents?: boolean;
   /** Must resolve ONLY a confirmed outbound event for this channel. */
   resolveConfirmedRoot: (eventId: string) => BuzzReplyRoot | null;
   queue: Required<Pick<InboundQueuePort, "createQitem" | "getQitem">>;
@@ -133,6 +136,17 @@ export class BuzzInboundLab {
     return this.ingestBatch(messages);
   }
 
+  /** Accept only an already EXHAUSTIVE composite-cursor history. Every item
+   *  is validated before the first queue write. Caller must establish that
+   *  its history result is complete; incomplete histories cannot be passed.
+   */
+  async ingestVerifiedHistory(messages: BuzzMessage[]): Promise<{
+    ok: boolean; reason?: string; accepted: number; ignored: number; scanned: number;
+  }> {
+    if (!this.opts.requireSignedEvents) throw new Error("Buzz verified-history ingest requires strict verification");
+    return this.ingestBatch(messages);
+  }
+
   /** A bounded backwards scan of channel history. No cursor or partial ACK is
    *  written until the entire bounded scan is demonstrably complete.
    *  The CLI's timestamp-only `--before` cannot resolve >limit same-second
@@ -141,6 +155,9 @@ export class BuzzInboundLab {
   async recoverHistory(opts: { maxPages?: number } = {}): Promise<{
     ok: boolean; reason?: string; accepted: number; ignored: number; scanned: number; pages: number;
   }> {
+    if (this.opts.requireSignedEvents) {
+      throw new Error("Buzz signed inbound requires authenticated composite-cursor recovery");
+    }
     const maxPages = opts.maxPages ?? 16;
     if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 64) throw new Error("invalid Buzz recovery page cap");
     const limit = this.opts.limit ?? 100;
@@ -176,6 +193,11 @@ export class BuzzInboundLab {
   private async ingestBatch(messages: BuzzMessage[]): Promise<{
     ok: boolean; reason?: string; accepted: number; ignored: number; scanned: number;
   }> {
+    // Pre-validate the complete batch: a malformed or unauthenticated event
+    // at its tail must never lead to partial queue commits.
+    if (this.opts.requireSignedEvents) {
+      for (const ev of messages) verifyBuzzNormalizedMessage(ev, this.opts.channelId);
+    }
     mkdirSync(dirname(this.lockFile), { recursive: true, mode: 0o700 });
     let lock: number;
     try { lock = openSync(this.lockFile, "wx", 0o600); }

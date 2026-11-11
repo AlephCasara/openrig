@@ -113,10 +113,10 @@ async function main() {
     });
     console.log("PASS: real upstream Buzz relay integration smoke.");
     const { ensureGuestChannelMember, runBuzzInboundSmoke } = await import("./inbound-queue.mjs");
-    // A revoked private-channel member can lack access to messages posted
-    // while removed; re-admit the guest BEFORE posting the queue-driven root.
-    ensureGuestChannelMember({
-      cli, baseUrl: env.BUZZ_RELAY_URL, channelId: validated.channelId, owner, guest,
+    // Distinct, never-revoked identity for the independent inbound test.
+    const inboundGuest = nostrIdentity();
+    await ensureGuestChannelMember({
+      cli, baseUrl: env.BUZZ_RELAY_URL, channelId: validated.channelId, owner, guest: inboundGuest,
     });
     const { runBuzzQueueSmoke } = await import("./outbound-queue.mjs");
     const root = await runBuzzQueueSmoke({
@@ -125,7 +125,7 @@ async function main() {
     });
     await runBuzzInboundSmoke({
       cli, baseUrl: env.BUZZ_RELAY_URL,
-      channelId: validated.channelId, owner, guest, root,
+      channelId: validated.channelId, owner, guest: inboundGuest, root,
     });
     const { runCliFaultSmoke } = await import("./fault.mjs");
     await runCliFaultSmoke({ cli, secret: owner.secret });

@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure";
+import { verifyBuzzSignedMessage } from "../src/domain/gateway/buzz/verified-history.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   addHumanFragment, loadHumanRegistry, resolveBuzzHandle, validateHumanFragment,
 } from "../src/domain/gateway/human-registry.js";
-import { buildRegisteredBuzzInboundLab, buildRegisteredBuzzOutboundLabWire, registeredBuzzDestinations } from "../src/domain/gateway/buzz/registry-context.js";
+import { buildRegisteredBuzzInboundLab, buildRegisteredBuzzOutboundLabWire, recoverRegisteredBuzzInbox, registeredBuzzDestinations } from "../src/domain/gateway/buzz/registry-context.js";
+import type { BuzzVerifiedHistoryClient } from "../src/domain/gateway/buzz/verified-history.js";
 import {
   BuzzOutboundDelivery, prepareBuzzDecision, resolveConfirmedBuzzRoot,
 } from "../src/domain/gateway/buzz/outbound-delivery.js";
@@ -19,10 +22,18 @@ import { makeQueuePorts } from "../src/domain/gateway/slack/queue-access.js";
 
 const channel = "2e4ab450-4c57-4541-8e3b-7491e1dd535f";
 const other = "c60cb109-dc62-4ad4-9c90-3b72f97856b4";
-const pubkey = "a".repeat(64);
+const guestPrivate = Uint8Array.from(Buffer.from("01".repeat(32), "hex"));
+const pubkey = getPublicKey(guestPrivate);
 const self = "b".repeat(64);
 const rootEvent = "c".repeat(64);
-const replyEvent = "d".repeat(64);
+function signedReply(content: string, createdAt = 1762800001) {
+  const signed = finalizeEvent({
+    kind: 9, content, created_at: createdAt,
+    tags: [["h", channel], ["e", rootEvent, "", "reply"]],
+  }, guestPrivate);
+  return verifyBuzzSignedMessage(signed, channel);
+}
+const replyEvent = signedReply("Review complete").id;
 
 function human(id: string, ref = channel, key = pubkey) {
   return {
@@ -110,10 +121,7 @@ describe("Buzz first-class registered identity and durable reply root", () => {
           return input.qitemId!;
         },
       },
-      transport: { getMessages: async () => [{
-        id: replyEvent, authorPubkey: pubkey, channelId: channel,
-        content: "Review complete", createdAt: 1762800001, replyTo: rootEvent,
-      }] },
+      transport: { getMessages: async () => [signedReply("Review complete")] },
     });
     expect(await lab().pollOnce()).toMatchObject({ ok: true, accepted: 1 });
     expect(created).toHaveLength(1);
@@ -122,6 +130,30 @@ describe("Buzz first-class registered identity and durable reply root", () => {
       inReplyTo: "ask-1",
     });
     expect(await lab().pollOnce()).toMatchObject({ ok: true, accepted: 0 });
+    await expect(lab().recoverHistory()).rejects.toThrow(/composite-cursor recovery/);
+    const secondSigned = signedReply("Another signed response", 1762800002);
+    const verifiedClient = {
+      recoverVerifiedHistory: async () => ({
+        complete: true, pages: 1, events: [signedReply("Review complete"), secondSigned],
+      }),
+      getVerifiedMessages: async () => [signedReply("Review complete"), secondSigned],
+    } as unknown as BuzzVerifiedHistoryClient;
+    const complete = await recoverRegisteredBuzzInbox({
+      home, channelId: channel, selfPubkey: self,
+      queue: {
+        getQitem: (id) => rows.get(id) ?? null,
+        createQitem: async (input) => {
+          created.push(input);
+          rows.set(input.qitemId!, {
+            qitemId: input.qitemId!, sourceSession: input.source,
+            destinationSession: input.destination, body: input.body,
+          });
+          return input.qitemId!;
+        },
+      },
+    }, verifiedClient);
+    expect(complete).toMatchObject({ ok: true, accepted: 1, pages: 1 });
+    expect(created).toHaveLength(2);
     // Registration changes are observed on every poll; a caller cannot supply
     // a fabricated display name or arbitrary pubkey to bypass the registry.
   });
@@ -146,12 +178,31 @@ describe("Buzz first-class registered identity and durable reply root", () => {
         getQitem: () => ({ qitemId: "ask", sourceSession: "another@rig", destinationSession: "jane@external" }),
         createQitem: async () => { throw new Error("unexpected create"); },
       },
-      transport: { getMessages: async () => [{
-        id: replyEvent, authorPubkey: pubkey, channelId: channel,
-        content: "No impersonation", createdAt: 1, replyTo: rootEvent,
-      }] },
+      transport: { getMessages: async () => [signedReply("No impersonation", 1)] },
     });
     expect(await lab.pollOnce()).toMatchObject({ ok: true, accepted: 0, ignored: 1 });
+  });
+
+  it("never processes an incomplete composite history even when registry and queue are present", async () => {
+    expect(addHumanFragment(human("jane"), home).ok).toBe(true);
+    let creates = 0;
+    const client = {
+      recoverVerifiedHistory: async () => ({
+        complete: false, reason: "buzz-history-page-limit", pages: 2, events: [],
+      }),
+      getVerifiedMessages: async () => { throw new Error("must not query or ingest incomplete history"); },
+    } as unknown as BuzzVerifiedHistoryClient;
+    const response = await recoverRegisteredBuzzInbox({
+      home, channelId: channel, selfPubkey: self,
+      queue: {
+        getQitem: () => null,
+        createQitem: async () => { creates++; throw new Error("unexpected"); },
+      },
+    }, client, { pageSize: 100, maxPages: 2 });
+    expect(response).toMatchObject({
+      ok: false, reason: "buzz-history-page-limit", accepted: 0, scanned: 0, pages: 2,
+    });
+    expect(creates).toBe(0);
   });
 
   it("scopes outbound recipients to current canonical Buzz PRIMARY bindings and honors revocation", async () => {

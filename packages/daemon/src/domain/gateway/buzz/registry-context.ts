@@ -5,6 +5,7 @@ import { loadHumanRegistry, resolveBuzzHandle } from "../human-registry.js";
 import { resolveConfirmedBuzzRoot } from "./outbound-delivery.js";
 import { buildBuzzOutboundLabWire, type BuzzOutboundLabOpts, type BuzzOutboundLabWire } from "./outbound-wire-lab.js";
 import { BuzzInboundLab, type BuzzInboundLabOpts } from "./inbound-lab.js";
+import { BuzzVerifiedHistoryClient } from "./verified-history.js";
 
 /** The canonical, current list of humans whose PRIMARY delivery binding is
  *  Buzz on this channel; no Slack, relay, secondary Buzz, or unregistered handle.
@@ -41,6 +42,7 @@ export type RegisteredBuzzInboundOpts = Omit<BuzzInboundLabOpts,
 export function buildRegisteredBuzzInboundLab(opts: RegisteredBuzzInboundOpts): BuzzInboundLab {
   return new BuzzInboundLab({
     ...opts,
+    requireSignedEvents: true,
     resolveHumanPubkey: (pubkey) => {
       const current = loadHumanRegistry(opts.home, { readOnly: true });
       if (!current.ok) throw new Error("Buzz human registry unavailable or drifted");
@@ -56,4 +58,33 @@ export function buildRegisteredBuzzInboundLab(opts: RegisteredBuzzInboundOpts): 
       return root;
     },
   });
+}
+
+/** Read a complete, bounded and locally verified history before writing ANY
+ *  inbound queue rows. A transport error, page cap, changed head or invalid
+ *  Nostr signature leaves the inbound queue untouched.
+ */
+export async function recoverRegisteredBuzzInbox(
+  opts: Omit<RegisteredBuzzInboundOpts, "transport">,
+  client: BuzzVerifiedHistoryClient,
+  caps: { pageSize?: number; maxPages?: number } = {},
+): Promise<{
+  ok: boolean; reason?: string; accepted: number; ignored: number;
+  scanned: number; pages: number;
+}> {
+  const history = await client.recoverVerifiedHistory({
+    channelId: opts.channelId, pageSize: caps.pageSize, maxPages: caps.maxPages,
+  });
+  if (!history.complete) return {
+    ok: false, reason: history.reason, accepted: 0, ignored: 0, scanned: 0,
+    pages: history.pages,
+  };
+  const lab = buildRegisteredBuzzInboundLab({
+    ...opts,
+    transport: {
+      getMessages: ({ channelId, limit }) => client.getVerifiedMessages({ channelId, limit }),
+    },
+  });
+  const outcome = await lab.ingestVerifiedHistory(history.events);
+  return { ...outcome, pages: history.pages };
 }
