@@ -35,7 +35,7 @@ export function compareGuidanceSnapshots(
   atLaunch: readonly GuidanceSourceDigest[] | null,
   now: readonly GuidanceSourceDigest[] | null,
 ): GuidanceStatus {
-  if (!atLaunch?.length || !now) return { status: "unknown", changedPaths: [] };
+  if (atLaunch == null || now == null) return { status: "unknown", changedPaths: [] };
   const before = new Map(atLaunch.map(file => [file.path, file.sha256]));
   const current = new Map(now.map(file => [file.path, file.sha256]));
   const changedPaths = [...new Set([...before.keys(), ...current.keys()])]

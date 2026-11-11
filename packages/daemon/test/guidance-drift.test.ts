@@ -12,7 +12,8 @@ describe("per-occupant guidance snapshot diff", () => {
 
   it("treats missing captured provenance as unknown, never current", () => {
     expect(compareGuidanceSnapshots(null, updated)).toEqual({ status: "unknown", changedPaths: [] });
-    expect(compareGuidanceSnapshots([], updated)).toEqual({ status: "unknown", changedPaths: [] });
+    // An empty array is a captured, known-empty launch; null means missing capture.
+    expect(compareGuidanceSnapshots([], updated)).toEqual({ status: "stale", changedPaths: ["culture.md", "worker.md"] });
   });
 
   it("flags added or removed guidance files without requiring a live seat", () => {
