@@ -100,3 +100,40 @@ export function summarizeToolTranscript(
     malformedLines,
   };
 }
+
+/** Aggregate multiple independent JSONL sessions. Tool-use IDs can repeat across files,
+ * so parse/dedupe each session in isolation before adding counts. The caller is
+ * responsible for obtaining transcripts only from the selected authorized seat. */
+export function summarizeToolTranscriptFiles(
+  sessionJsonl: readonly string[], configuredMcpServers: readonly string[], since?: string,
+): TranscriptToolSummary {
+  const tools = new Map<string, { calls: number; returnedCharacters: number }>();
+  const servers = new Map<string, { calls: number; returnedCharacters: number }>();
+  const shell = new Map<string, { calls: number; returnedCharacters: number }>();
+  let malformedLines = 0;
+  const merge = (target: Map<string, { calls: number; returnedCharacters: number }>,
+    name: string, stats: { calls: number; returnedCharacters: number }) => {
+    const current = target.get(name) ?? { calls: 0, returnedCharacters: 0 };
+    current.calls += stats.calls;
+    current.returnedCharacters += stats.returnedCharacters;
+    target.set(name, current);
+  };
+  for (const jsonl of sessionJsonl) {
+    const summary = summarizeToolTranscript(jsonl, configuredMcpServers, since);
+    malformedLines += summary.malformedLines;
+    for (const stat of summary.tools) merge(tools, stat.name, stat);
+    for (const stat of summary.servers) merge(servers, stat.name, stat);
+    for (const stat of summary.shell) merge(shell, stat.group, stat);
+  }
+  const byName = (a: string, b: string) => a.localeCompare(b);
+  const serverNames = [...new Set([...configuredMcpServers, ...servers.keys()])].sort(byName);
+  return {
+    tools: [...tools.entries()].sort(([a], [b]) => byName(a, b)).map(([name, stats]) => ({ name, ...stats })),
+    servers: serverNames.map(name => {
+      const stats = servers.get(name) ?? { calls: 0, returnedCharacters: 0 };
+      return { name, ...stats, unused: stats.calls === 0 };
+    }),
+    shell: [...shell.entries()].sort(([a], [b]) => byName(a, b)).map(([group, stats]) => ({ group, ...stats })),
+    malformedLines,
+  };
+}
