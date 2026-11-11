@@ -67,8 +67,12 @@ export function assessSpecApplyGate(
   work: readonly SeatWorkRow[],
   whenIdle: boolean,
 ): ApplyGate {
-  const busySeats = [...new Set(work.filter(row => row.state === "in-progress" ||
-    (typeof row.claimedAt === "string" && row.claimedAt.length > 0)).map(row => row.seat))].sort();
+  const affectedRunning = new Set(plan.filter(row => row.wasRunning && row.changes.length > 0)
+    .map(row => row.seat));
+  const busySeats = [...new Set(work.filter(row => affectedRunning.has(row.seat) &&
+    (row.state === "in-progress" ||
+      (typeof row.claimedAt === "string" && row.claimedAt.length > 0)))
+    .map(row => row.seat))].sort();
   if (busySeats.length) return {
     status: whenIdle ? "waiting-idle" : "refused",
     busySeats,
