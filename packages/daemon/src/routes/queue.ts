@@ -47,6 +47,7 @@ import { HumanModeService } from "../domain/gateway/human-operating-modes.js";
 import type { HumanQuestion } from "../domain/human-questions.js";
 import { sharedChannelFor } from "../domain/gateway/participants.js";
 import { queryLimit, SQL_LIMIT_BOUND } from "./query-limit.js";
+import { threadOwners } from "../domain/queue-thread-owner.js";
 import { feedPerspective } from "../domain/feed-perspective.js";
 
 /**
@@ -1325,6 +1326,15 @@ export function queueRoutes(): Hono {
     const rows = window.filter((row) => inView(row.destinationSession));
     return c.json({ items: rows.slice(0, raw), limit: raw, truncated: rows.length > raw || (perspective !== undefined && window.length > 100),
       ...(perspective ? { perspective } : {}) });
+  });
+
+  // A bounded, read-only ownership hint for Slack's shared threads. Never route by
+  // historical topic: only still-open rows with the exact thread tag count.
+  app.get("/thread-owner/:root", (c) => {
+    const root = c.req.param("root");
+    if (!root || root.trim() !== root) return c.json({ error: "thread_root_invalid" }, 400);
+    const rows = getRepo(c).list({ tag: `thread:${root}`, activeOnly: true, limit: SQL_LIMIT_BOUND });
+    return c.json({ root, owners: threadOwners(rows, root), complete: rows.length < SQL_LIMIT_BOUND });
   });
 
   app.get("/list", (c) => {

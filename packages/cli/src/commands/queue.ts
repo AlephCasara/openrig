@@ -1033,6 +1033,28 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
   };
 
   cmd
+    .command("thread-owner <root-row>")
+    .description("List seats with open rows in a Slack thread, newest owner first (advisory only)")
+    .option("--json", "Machine-readable owner list and completeness indicator")
+    .action(async (root: string, opts: { json?: boolean }) => {
+      const deps = getDeps();
+      await withClient(deps, async (client) => {
+        const res = await client.get<{
+          root: string;
+          owners: Array<{ seat: string; mission: string | null; qitemId: string; tsCreated: string }>;
+          complete: boolean;
+        }>(`/api/queue/thread-owner/${encodeURIComponent(root)}`);
+        if (res.status >= 400) return printResult(opts.json ?? false, res.data, res.status);
+        if (opts.json) return console.log(JSON.stringify(res.data));
+        if (!res.data.complete) console.error("Thread owner lookup is truncated; do not route on incomplete evidence.");
+        if (!res.data.owners.length) return console.log("No open thread owner; route this reply to the front seat.");
+        for (const owner of res.data.owners) {
+          console.log(`${owner.seat}  mission=${owner.mission ?? "unknown"}  row=${owner.qitemId}`);
+        }
+      });
+    });
+
+  cmd
     .command("create")
     .description("Create a new qitem")
     .option("--source <session>", "Declared source outside a managed seat (recorded as claimed:v1); the managed seat env takes precedence")
