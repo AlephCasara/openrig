@@ -201,7 +201,7 @@ export function transcriptRoutes(): Hono {
       );
     }
 
-    return c.json({ session: sessionName, lines, content, ingestHealth });
+    return c.json({ session: sessionName, lines, content: redactTranscriptContent(content), ingestHealth });
   });
 
   router.get("/:session/grep", async (c) => {
@@ -255,7 +255,7 @@ export function transcriptRoutes(): Hono {
       return c.json({ error: transcriptIngestError(sessionName, ingestHealth), ingestHealth }, 503);
     }
 
-    return c.json({ session: sessionName, pattern, matches, ingestHealth });
+    return c.json({ session: sessionName, pattern: redactTranscriptContent(pattern), matches: matches.map(redactTranscriptContent), ingestHealth });
   });
 
   // GET /:session/full — return the full transcript content for a session.

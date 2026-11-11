@@ -81,6 +81,19 @@ describe("transcript routes", () => {
     return { rig, node, session, store };
   }
 
+  it("redacts credential-shaped transcript content from tail and grep responses", async () => {
+    const credential = ["sk", "FakeAbCdEfGhIjKlMnOpQr"].join("-");
+    const { store } = seedRigWithTranscript(`token ${credential} in output\n`);
+    const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
+    for (const route of ["tail?lines=10", "grep?pattern=token", `grep?pattern=${encodeURIComponent(credential)}`]) {
+      const response = await app.request(`/api/transcripts/dev-impl@my-rig/${route}`);
+      expect(response.status).toBe(200);
+      const payload = JSON.stringify(await response.json());
+      expect(payload).not.toContain(credential);
+      expect(payload).toContain("[REDACTED]");
+    }
+  });
+
   it("GET /tail returns 200 with stripped content for existing transcript", async () => {
     const { store } = seedRigWithTranscript("line1\n\x1b[1mline2\x1b[0m\nline3\n");
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
