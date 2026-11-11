@@ -40,6 +40,17 @@ describe("RigExpansionService", () => {
     };
   }
 
+  it("--no-launch persists a pod and node without invoking any launcher", async () => {
+    const rig = seedRig();
+    const launch = vi.spyOn(setup.podInstantiator, "launchValidatedSpec");
+    const result = await service.expand({ rigId: rig.id, pod: terminalPodFragment(), noLaunch: true } as ExpansionRequest & { noLaunch: boolean });
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.nodes).toEqual([expect.objectContaining({ logicalId: "infra.server", status: "materialized" })]);
+    expect(setup.rigRepo.getRig(rig.id)?.nodes.some(node => node.logicalId === "infra.server")).toBe(true);
+  });
+
   // T1: Expansion with valid pod creates pod + nodes
   it("creates pod and nodes for a valid expansion", async () => {
     const rig = seedRig();

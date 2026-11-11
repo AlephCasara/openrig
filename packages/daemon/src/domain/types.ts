@@ -1602,6 +1602,8 @@ export interface ExpansionRequest {
   pod: ExpansionPodFragment;
   crossPodEdges?: Array<{ from: string; to: string; kind: string }>;
   rigRoot?: string;
+  /** Materialize the topology without launching any occupant. */
+  noLaunch?: boolean;
 }
 
 export interface ExpansionNodeOutcome {
@@ -1611,7 +1613,7 @@ export interface ExpansionNodeOutcome {
   // (e.g., workspace-trust prompt awaiting operator action). The
   // session row's startup_status carries the same signal so `rig ps`
   // surfaces it. Distinct from `failed` (terminal).
-  status: "launched" | "failed" | "attention_required";
+  status: "launched" | "failed" | "attention_required" | "materialized";
   error?: string;
   sessionName?: string;
 }

@@ -69,6 +69,27 @@ export class RigExpansionService {
     const podId = newPod ?? "";
     const podNamespace = pod.id;
 
+    // No-launch intentionally stops after persistence. No launchValidatedSpec,
+    // node session, or occupant may be started on this path.
+    if (request.noLaunch) {
+      const nodes: ExpansionNodeOutcome[] = newNodes.map(node => ({
+        logicalId: node.logicalId,
+        nodeId: updatedRig.nodes.find(record => record.logicalId === node.logicalId)?.id ?? "",
+        status: "materialized",
+      }));
+      if (nodes.some(node => !node.nodeId)) {
+        return { ok: false, code: "materialize_incomplete", error: "Materialized node missing from the rig inventory" };
+      }
+      this.deps.eventBus.emit({
+        type: "rig.expanded", rigId: request.rigId, podId, podNamespace,
+        nodes, status: "ok",
+      });
+      return {
+        ok: true, status: "ok", podId, podNamespace, nodes,
+        warnings: materializeResult.result.warnings ?? [], retryTargets: [],
+      };
+    }
+
     // 5. Launch and fully start the newly created nodes via the launch core on
     // the structured spec (no YAML round-trip; normalize is pure).
     const launchOutcome = await this.deps.podInstantiator.launchValidatedSpec(

@@ -714,7 +714,11 @@ rigsRoutes.post("/:rigId/expand", async (c) => {
   const crossPodEdges = Array.isArray(body["crossPodEdges"]) ? body["crossPodEdges"] as Array<{ from: string; to: string; kind: string }> : undefined;
   const rigRoot = typeof body["rigRoot"] === "string" ? body["rigRoot"] : undefined;
 
-  const result = await expansionService.expand({ rigId, pod, crossPodEdges, rigRoot });
+  if (body["noLaunch"] !== undefined && typeof body["noLaunch"] !== "boolean") {
+    return c.json({ error: "noLaunch must be a boolean" }, 400);
+  }
+  const noLaunch = body["noLaunch"] === true;
+  const result = await expansionService.expand({ rigId, pod, crossPodEdges, rigRoot, noLaunch });
 
   if (!result.ok) {
     switch (result.code) {

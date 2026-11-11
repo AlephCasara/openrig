@@ -27,7 +27,8 @@ export function expandCommand(depsOverride?: StatusDeps): Command {
     .argument("<pod-fragment-path>", "Path to YAML pod fragment file")
     .option("--json", "JSON output for agents")
     .option("--rig-root <path>", "Root directory for agent resolution")
-    .action(async (rigId: string, fragmentPath: string, opts: { json?: boolean; rigRoot?: string }) => {
+    .option("--no-launch", "Materialize topology only; never start an occupant")
+    .action(async (rigId: string, fragmentPath: string, opts: { json?: boolean; rigRoot?: string; launch?: boolean }) => {
       const deps = getDeps();
       const status = await getDaemonStatus(deps.lifecycleDeps);
       if (!daemonStatusGuard(status)) return;
@@ -60,6 +61,7 @@ export function expandCommand(depsOverride?: StatusDeps): Command {
       const body: Record<string, unknown> = { pod };
       if (crossPodEdges) body["crossPodEdges"] = crossPodEdges;
       if (opts.rigRoot) body["rigRoot"] = opts.rigRoot;
+      if (opts.launch === false) body["noLaunch"] = true;
 
       const client = deps.clientFactory(getDaemonUrl(status));
       const resolution = await resolveRigHandle(client, rigId);
@@ -100,7 +102,7 @@ export function expandCommand(depsOverride?: StatusDeps): Command {
       if (data.nodes && data.nodes.length > 0) {
         console.log("  Nodes:");
         for (const node of data.nodes) {
-          const icon = node.status === "launched" ? "OK" : "FAIL";
+          const icon = node.status === "launched" || node.status === "materialized" ? "OK" : "FAIL";
           const session = node.sessionName ? ` (${node.sessionName})` : "";
           const error = node.error ? ` — ${node.error}` : "";
           console.log(`    [${icon}] ${node.logicalId}${session}${error}`);
