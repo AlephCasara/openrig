@@ -741,6 +741,8 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
     const keepDiagnostics = n.needsAttention !== false;
     const observation = n.modelObservation == null ? null : modelObservation(n.modelObservation, n.sessionStatus === "running");
     const compact: Record<string, unknown> = {
+      // Per-row schema version preserves the existing JSON array envelope.
+      schemaVersion: 1,
       // identity (rigId/rigName + logicalId + session) — disambiguates under -A.
       rigId: n.rigId,
       rigName: n.rigName,
