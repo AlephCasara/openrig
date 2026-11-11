@@ -34,6 +34,7 @@ import { sessionCommunityHarnessSelect } from "./session-registry.js";
 import { claudeMcpArgs, readSeatClaudeMcp, type ClaudeMcp } from "./claude-mcp.js";
 import { isLaunchWrapperRuntime, parseStoredLaunchWrapper } from "./launch-wrapper.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import { estimateContextTokens } from "./context-usage-token-estimate.js";
 
 // -- Row types for SQL results --
 
@@ -1192,7 +1193,14 @@ export function getNodeInventoryWithContext(
       : undefined;
     return {
       ...e,
-      contextUsage: { ...usage, currentUsage: null },
+      contextUsage: { ...usage, currentUsage: null, usedTokens: estimateContextTokens({
+        source: usage.source,
+        currentUsage: usage.currentUsage,
+        totalInputTokens: usage.totalInputTokens,
+        totalOutputTokens: usage.totalOutputTokens,
+        usedPercentage: usage.usedPercentage,
+        contextWindowSize: usage.contextWindowSize,
+      }) },
       ...(transcriptIngest ? { transcriptIngest } : {}),
     };
   });

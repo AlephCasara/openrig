@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
+import { estimateContextTokens } from "./context-usage-token-estimate.js";
 
 /**
  * Watchdog jobs repository (PL-004 Phase C; extended in Phase D).
@@ -278,7 +279,7 @@ export class WatchdogJobsRepository {
       .prepare(
         `SELECT usage.used_percentage, usage.context_window_size,
                 usage.total_input_tokens, usage.total_output_tokens,
-                usage.sampled_at
+                usage.source, usage.current_usage, usage.sampled_at
            FROM sessions AS session
            JOIN occupant_tenures AS tenure
              ON tenure.node_id = session.node_id
@@ -298,21 +299,18 @@ export class WatchdogJobsRepository {
       context_window_size: number | null;
       total_input_tokens: number | null;
       total_output_tokens: number | null;
+      source: string | null;
+      current_usage: string | null;
       sampled_at: string | null;
     } | undefined;
     if (!row) return null;
     const contextWindowSize = row.context_window_size ?? null;
     const usedPercentage = row.used_percentage ?? null;
-    // Token estimate: seat-reported totals when present (Codex token_count),
-    // otherwise the reported percentage of the reported window (Claude statusline).
-    const sampledTotal = row.total_input_tokens != null && row.total_output_tokens != null
-      ? row.total_input_tokens + row.total_output_tokens
-      : null;
-    const usedTokens = sampledTotal != null
-      ? sampledTotal
-      : usedPercentage != null && contextWindowSize != null && contextWindowSize > 0
-        ? Math.round((usedPercentage / 100) * contextWindowSize)
-        : null;
+    const usedTokens = estimateContextTokens({
+      source: row.source, currentUsage: row.current_usage,
+      totalInputTokens: row.total_input_tokens, totalOutputTokens: row.total_output_tokens,
+      usedPercentage, contextWindowSize,
+    });
     const sampledAt = row.sampled_at ?? null;
     const sampledMs = sampledAt ? Date.parse(sampledAt) : NaN;
     const fresh = Number.isFinite(sampledMs)

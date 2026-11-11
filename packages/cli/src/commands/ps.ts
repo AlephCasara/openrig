@@ -119,6 +119,8 @@ export interface NodeEntry {
   contextUsage?: {
     availability: "known" | "unknown";
     usedPercentage: number | null;
+    usedTokens?: number | null;
+    contextWindowSize?: number | null;
     fresh: boolean;
     state?: "critical" | "warning" | "low" | "unknown";
     sampledAt: string | null;
@@ -1561,7 +1563,8 @@ function formatContextUsage(ctx: NodeEntry["contextUsage"]): string {
     return "??";
   }
   const stale = ctx.fresh === false ? "*" : "";
-  return `${ctx.usedPercentage}%${stale}`;
+  const tokens = typeof ctx.usedTokens === "number" ? ` ${Math.round(ctx.usedTokens / 1000)}K` : "";
+  return `${ctx.usedPercentage}%${tokens}${stale}`;
 }
 
 
