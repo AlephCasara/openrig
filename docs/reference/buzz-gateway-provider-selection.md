@@ -44,16 +44,45 @@ The selector validates the schema and explicitly rejects unknown fields, includi
 
 `buzz/inbound-lab.ts` independently demonstrates reading a reply from an allow-listed pubkey, matching it to a **confirmed outbound root**, recording a deterministic receipt ID before queue insertion, and safely deduplicating it across restarts. Incoming messages land as `humanAnswer: false` correspondence only, never as automatic approvals. A test runs through the actual in-memory SQLite `QueueRepository` and `makeQueuePorts` implementation. A real-relay smoke also sends a guest reply, with NIP-43 and private-channel membership enforced, and verifies that it becomes exactly one inbound queue-port item.
 
-These two lab paths are **not an operational inbound provider**. In particular: confirmed-root lookups and registered-human mappings are injected by the harness; actual registry schema currently only supports Slack/relay binding kinds; a bounded `messages get` window cannot prove historical completeness; the current read parser does not independently verify Schnorr signatures on each returned event; neither the full ask/answer approvals nor the existing Slack/relay policy engine have been ported. Any saturated window is refused rather than treated as a complete inbox.
+### Canonical identities, conversation roots and backfill (second phase)
+
+The human registry now accepts **first-class `kind: buzz`** bindings with a **lowercase channel UUID as `connectorRef`**, a canonical **64-digit, lowercase x-only Nostr pubkey as `handle`**, and a non-secret `secretsRef` pointer (`env:BUZZ_PRIVATE_KEY` or `vault://buzz/<ref>`). It continues to require exactly one primary binding per human. Two humans cannot claim the same pubkey in the same channel; a pubkey may be registered on a different channel with a separate identity. Slack and relay binding rules remain unchanged.
+
+Example human fragment under `<openrig-home>/gateway/humans/jane.yaml`:
+
+```yaml
+entityId: jane
+class: human
+displayName: Jane
+address: jane@external
+connectorBindings:
+  - kind: buzz
+    connectorRef: 2e4ab450-4c57-4541-8e3b-7491e1dd535f
+    secretsRef: env:BUZZ_PRIVATE_KEY
+    role: primary
+    handle: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+prefs:
+  deliveryClass: B
+```
+
+This is an **example of identity metadata**, not a working Buzz provider configuration. Do not place an actual private key in a human fragment. Use the registry's supported authoring mechanism; generated projections must never be hand-edited.
+
+`buzz/registry-context.ts` now resolves inbound sender pubkeys by rereading the canonical human registry (read-only), scoped to the channel, rather than accepting caller-supplied names. It resolves parent message IDs from **confirmed** records in `buzz-delivery-ledger.json`, whose new records retain the original queue item, sending seat, recipient and event ID. The inbound resolver cross-checks that the original queue item still exists with the same sender and destination. Old journal records without correlation fields are ignored as reply roots. For outbound tests, a separate registry-backed allow-list includes only Buzz **primary** bindings and is rechecked on every send; revoked identities are not sent later notifications.
+
+The existing Slack/relay notification projection now explicitly **excludes Buzz-primary humans**. Buzz destinations cannot be accidentally treated as Slack-owned just because they have a connector binding. Relay-primary bindings remain eligible to the existing relay pathway. This is a compatibility guard, not a new production routing feature.
+
+`BuzzCliClient.getMessages` now accepts the official `--before` timestamp argument. `BuzzInboundLab.recoverHistory` scans bounded pages backwards with an overlapping second and event-ID deduplication; the batch is ingested only once the scan is complete. An undecidable same-second boundary, malformed/changed event, page-budget limit, or unreadable journal **fails closed without accepting a partial history**. A 225-message synthetic backfill test and an official-relay CLI `--before` smoke passed. No false claims of a gap-free cursor are made: a large burst within one second still cannot be paged safely by this API alone, and concurrent event arrival needs a stronger cursor/snapshot contract.
+
+These laboratory paths remain **non-operational**: the CLI parser still does not independently verify a returned event's Schnorr signature, the production gateway's approval/attention engine is not integrated, replay after partially committed queue batches requires further fault injection, and the production switch from Slack to Buzz must preserve relay-only bindings and pending work. Buzz selection in daemon startup intentionally remains a named failure.
 
 A real relay + isolated OpenRig queue demonstration is available with the documented CLI command in `scripts/buzz-real-relay/README.md`. Synthetic faults and focused restart tests cover response loss, retry ambiguity, provenance mismatch, SQLite commit result loss, unauthorized senders and replay deduplication. No second rig or agent is launched.
 
 ## Required next work before enabling Buzz
 
-1. Define first-class Buzz identities and a routing boundary in the durable human registry. Keep relay-only bindings active independently of Slack/Buzz selection.
+1. Build operational registry-driven admission and lifecycle management on the foundation of the new Buzz binding, including verified public-key ownership and a production transport readiness surface. Keep relay-only bindings active independently of Slack/Buzz selection.
 2. Connect the outbound journal and inbox prototype to a production gateway **only after** adopting the existing delivery/attention policies and explicit human destinations, without changing Slack defaults.
-3. Bind inbound roots to persisted outbound receipts and enforce registered-human identity, channel permissions, conversation ownership, and locally verified event signatures.
-4. Implement complete cursor/backfill for more than a single `messages get` window, persistent dead-letter recovery and correct human-answer/approval semantics.
+3. Promote the lab's persisted outbound-root correlation and canonical registry validation to the production router, and add **local cryptographic verification** of raw Nostr event IDs/signatures, plus authorization checks at ingest.
+4. Replace the fail-closed, capped timestamp backfill prototype with a proven gap-free cursor/snapshot strategy (including same-second bursts), persistent dead-letter recovery and explicit human-answer/approval semantics.
 5. Prove crash recovery and operator reconciliation for uncertain post outcomes and stale locks. Switching from Slack to Buzz and back must account for open asks and pending decisions, never duplicate or silently reroute them.
 6. Add a guarded production `buzz` factory, honest operator-visible status and rollback only after all these gates pass. Explicit Buzz selection currently remains a named failure.
 

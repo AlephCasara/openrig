@@ -155,7 +155,7 @@ export class BuzzCliClient {
     return { eventId: receipt.event_id };
   }
 
-  async getMessages(input: { channelId: string; since?: number; limit?: number }): Promise<BuzzMessage[]> {
+  async getMessages(input: { channelId: string; since?: number; before?: number; limit?: number }): Promise<BuzzMessage[]> {
     requireChannelId(input.channelId);
     const limit = input.limit ?? 50;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_BATCH_SIZE) {
@@ -166,6 +166,12 @@ export class BuzzCliClient {
     }
     const args = ["messages", "get", "--channel", input.channelId, "--limit", String(limit), "--kinds", "9"];
     if (input.since !== undefined) args.push("--since", String(input.since));
+    if (input.before !== undefined) {
+      if (!Number.isSafeInteger(input.before) || input.before < 1) {
+        throw new Error("Buzz message before must be a positive Unix timestamp");
+      }
+      args.push("--before", String(input.before));
+    }
     const raw = parseCliJson(await this.runner(args));
     if (!Array.isArray(raw)) throw new Error("Buzz CLI returned invalid message batch");
     if (raw.length > MAX_BATCH_SIZE) throw new Error("Buzz CLI returned an oversized message batch");

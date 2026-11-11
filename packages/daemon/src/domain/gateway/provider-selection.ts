@@ -157,7 +157,7 @@ export interface GatewayProviderFactories {
 
 /** Refuse cross-provider replay before a destination is reached. */
 export function assertProviderPendingCompatible(home: string, provider: GatewayProviderName, channelId?: string): void {
-  for (const decision of new DispatchBuffer(home).pending()) {
+  for (const decision of new DispatchBuffer(home).pendingStrict()) {
     const payload: unknown = decision.payload;
     const buzz = record(payload) && record(payload.buzzTransport) ? payload.buzzTransport : null;
     if (provider === "slack") {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { GatewaySubsystem, type GatewayWire } from "../src/domain/gateway/gateway-subsystem.js";
@@ -117,6 +117,16 @@ describe("Experimental gateway provider selection: fail closed, opt-in, no rig",
     expect(subsystem.dispatch("post", "human@kernel", {})).toMatchObject({ ok: false });
     expect(slackCalled).toBe(0);
     subsystem.stop();
+  });
+
+  it("fails closed when pending dispatcher state is unreadable or corrupt", () => {
+    mkdirSync(join(home, "gateway"));
+    writeFileSync(join(home, "gateway", "dispatch-buffer.json"), "{not-json");
+    let called = 0;
+    expect(() => buildSelectedGatewayWire({
+      home, slack: () => { called++; return fakeWire(); },
+    })).toThrow();
+    expect(called).toBe(0);
   });
 
   it("blocks Slack startup rather than replaying a pending Buzz delivery into Slack", () => {

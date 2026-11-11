@@ -24,8 +24,11 @@ import { parseSessionName } from "../session-name.js";
 
 // ── Schema (closed enums; extend only additively behind the contract) ──
 export const HUMAN_ENTITY_CLASSES = new Set(["human"]);          // M1's only class
-export const HUMAN_CONNECTOR_KINDS = new Set(["slack", "relay"]);
-export type HumanConnectorKind = "slack" | "relay";
+export const HUMAN_CONNECTOR_KINDS = new Set(["slack", "relay", "buzz"]);
+/** Buzz channel UUID and canonical x-only Nostr pubkey (lowercase, no npub encoding). */
+export const BUZZ_CHANNEL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const BUZZ_PUBKEY_PATTERN = /^[0-9a-f]{64}$/;
+export type HumanConnectorKind = "slack" | "relay" | "buzz";
 export const HUMAN_BINDING_ROLES = new Set(["primary", "secondary"]);
 export const HUMAN_DELIVERY_CLASSES = new Set(["A", "B", "C", "D"]);
 // entityId is the fragment key + filename: a stable slug that survives platform
@@ -126,14 +129,14 @@ export interface HumanConnectorBinding {
 }
 
 function handleScopeKey(binding: Pick<HumanConnectorBinding, "kind" | "connectorRef"> & { handle: string }): string {
-  return binding.kind === "relay"
-    ? JSON.stringify(["relay", binding.connectorRef, binding.handle])
+  return binding.kind === "relay" || binding.kind === "buzz"
+    ? JSON.stringify([binding.kind, binding.connectorRef, binding.handle])
     : `${binding.kind}:${binding.handle}`;
 }
 
 function handleScopeLabel(binding: Pick<HumanConnectorBinding, "kind" | "connectorRef"> & { handle: string }): string {
-  return binding.kind === "relay"
-    ? `relay (${binding.connectorRef}) handle "${binding.handle}"`
+  return binding.kind === "relay" || binding.kind === "buzz"
+    ? `${binding.kind} (${binding.connectorRef}) handle "${binding.handle}"`
     : `${binding.kind} handle "${binding.handle}"`;
 }
 
@@ -219,6 +222,11 @@ export function validateHumanFragment(raw: unknown): ValidateResult {
     }
     if (!HUMAN_BINDING_ROLES.has(String(b.role))) {
       return { ok: false, error: `connectorBindings[${i}].role "${String(b.role)}" must be primary|secondary` };
+    }
+    if (b.kind === "buzz" && (!BUZZ_CHANNEL_ID_PATTERN.test(b.connectorRef as string)
+      || typeof b.handle !== "string" || !BUZZ_PUBKEY_PATTERN.test(b.handle)
+      || !(b.secretsRef === "env:BUZZ_PRIVATE_KEY" || String(b.secretsRef).startsWith("vault://buzz/")))) {
+      return { ok: false, error: `connectorBindings[${i}] Buzz requires a channel UUID connectorRef, lowercase 64-character Nostr pubkey handle and safe secretsRef pointer (env:BUZZ_PRIVATE_KEY or vault://buzz/<ref>)` };
     }
     if (b.role === "primary") primaryCount++;
     // A6 v3: handle is OPTIONAL; when present it must be a clean platform id (ref-forgery-safe).
@@ -454,6 +462,39 @@ export function resolveRelayHandle(
       `Register the human + their handle first: rig gateway human add <entityId> --display-name … ` +
       `--binding relay:${connectorRef}:file:<absolute-env-file>:primary:handle=${handle} --delivery-class …; ` +
       `until then this message is REFUSED (it was NOT landed as a fabricated human seat).`,
+  };
+}
+
+export type BuzzHandleResolution =
+  | { kind: "registered"; entityId: string; address: string; channelId: string; pubkey: string }
+  | { kind: "unregistered"; channelId: string; reason: string };
+
+/** Buzz identity is scoped to an exact channel UUID and x-only Nostr public key.
+ *  An unregistered channel or key never becomes a fabricated OpenRig participant.
+ *  The relay authenticates events; callers must ALSO verify event signatures locally
+ *  before relying on this claimed pubkey for a production authorization decision.
+ */
+export function resolveBuzzHandle(
+  channelId: string,
+  pubkey: string,
+  entities: readonly HumanFragment[],
+): BuzzHandleResolution {
+  if (!BUZZ_CHANNEL_ID_PATTERN.test(channelId) || !BUZZ_PUBKEY_PATTERN.test(pubkey)) {
+    return { kind: "unregistered", channelId, reason: "invalid-buzz-channel-or-pubkey" };
+  }
+  const matched = entities.filter((entity) =>
+    entity.connectorBindings.some((binding) =>
+      binding.kind === "buzz" && binding.connectorRef.toLowerCase() === channelId.toLowerCase()
+        && binding.handle === pubkey));
+  if (matched.length !== 1) return {
+    kind: "unregistered", channelId,
+    reason: matched.length > 1 ? "buzz-identity-conflict" : "buzz-identity-not-registered",
+  };
+  return {
+    kind: "registered",
+    entityId: matched[0]!.entityId,
+    address: matched[0]!.address,
+    channelId, pubkey,
   };
 }
 

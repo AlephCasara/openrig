@@ -96,6 +96,19 @@ describe("Buzz experimental CLI transport boundary", () => {
     ]]);
   });
 
+  it("exposes the official CLI before cursor for bounded backwards recovery", async () => {
+    const argsSeen: string[][] = [];
+    const client = new BuzzCliClient({
+      runner: async (args) => { argsSeen.push([...args]); return "[]"; },
+    });
+    expect(await client.getMessages({ channelId: channel, before: 1783799999, limit: 80 })).toEqual([]);
+    expect(argsSeen[0]).toEqual([
+      "messages", "get", "--channel", channel, "--limit", "80", "--kinds", "9",
+      "--before", "1783799999",
+    ]);
+    await expect(client.getMessages({ channelId: channel, before: 0 })).rejects.toThrow(/positive/);
+  });
+
   it("refuses channel spoofing, missing author, unexpected event kind and oversized batch", async () => {
     const failures = [
       [event({ tags: [["h", "11111111-1111-1111-1111-111111111111"]] })],

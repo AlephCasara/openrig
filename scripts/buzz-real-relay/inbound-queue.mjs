@@ -67,10 +67,17 @@ export async function runBuzzInboundSmoke({ cli, baseUrl, channelId, owner, gues
         },
       },
     });
-    const first = await inbound.pollOnce();
+    // Backwards-history recovery is explicitly invoked, even for a small real
+    // channel; the CLI --before boundary is also probed against the real relay.
+    const first = await inbound.recoverHistory({ maxPages: 4 });
     assert.equal(first.ok, true);
     assert.equal(first.accepted, 1);
     assert.equal(inserts.length, 1);
+    const seenEvents = await reader.getMessages({ channelId, limit: 100 });
+    const newest = Math.max(...seenEvents.map((event) => event.createdAt));
+    const earlier = await reader.getMessages({ channelId, limit: 100, before: newest + 1 });
+    assert.ok(earlier.some((event) => event.id === reply.event_id),
+      "Official Buzz CLI --before must include messages strictly older than the requested timestamp");
     assert.equal(inserts[0].humanAnswer, false);
     assert.equal(inserts[0].inReplyTo, root.qitemId);
     assert.equal(inserts[0].destination, root.seat);

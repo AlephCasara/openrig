@@ -29,6 +29,8 @@ export interface BuzzOutboundOptions {
   channelId: string;
   expectedPubkey: string;
   authorizedDestinations: ReadonlySet<string>;
+  /** Optional fresh registry check; errors deny delivery rather than using a stale snapshot. */
+  destinationAllowed?: (address: string) => boolean;
   transport: BuzzOutboundTransport;
 }
 
@@ -38,6 +40,9 @@ export interface BuzzDeliveryRecord {
   destination: string;
   contentHash: string;
   pubkey: string;
+  /** Persisted only for new lab attempts; legacy entries without it are not reply roots. */
+  qitemId?: string;
+  sourceSeat?: string;
   eventId?: string;
 }
 
@@ -71,6 +76,8 @@ function validRecord(v: unknown): v is BuzzDeliveryRecord {
     && typeof v.destination === "string"
     && typeof v.contentHash === "string" && EVENT_ID.test(v.contentHash)
     && typeof v.pubkey === "string" && OWNER.test(v.pubkey)
+    && (v.qitemId === undefined || (typeof v.qitemId === "string" && v.qitemId.length > 0))
+    && (v.sourceSeat === undefined || (typeof v.sourceSeat === "string" && v.sourceSeat.length > 0))
     && (v.state === "attempting" ? v.eventId === undefined
       : typeof v.eventId === "string" && EVENT_ID.test(v.eventId));
 }
@@ -127,9 +134,11 @@ function frozenPayload(decision: OutboundDecision, opts: BuzzOutboundOptions): B
     throw new Error("Buzz cannot adopt relay or shared-channel decisions");
   }
   if (!p.destinationSession || !opts.authorizedDestinations.has(p.destinationSession)
+    || (opts.destinationAllowed && !opts.destinationAllowed(p.destinationSession))
     || decision.entityBindingRef !== p.destinationSession) {
     throw new Error("Buzz destination not explicitly authorized");
   }
+  if (typeof p.sourceSession !== "string" || !p.sourceSession) throw new Error("Buzz decision missing original sending seat");
   if (typeof p.qitemId !== "string" || !p.qitemId || typeof p.notificationKey !== "string"
     || !p.notificationKey || Buffer.byteLength(p.notificationKey, "utf8") > MAX_KEY_BYTES) {
     throw new Error("Buzz notification episode is missing a stable key");
@@ -137,8 +146,26 @@ function frozenPayload(decision: OutboundDecision, opts: BuzzOutboundOptions): B
   return p;
 }
 
+/** Resolve a reply parent from a durable, confirmed outbound event, never from
+ *  an unconfirmed CLI attempt or an attacker-supplied qitem ID.
+ *  Older journal entries missing the original queue metadata are safely ignored.
+ */
+export function resolveConfirmedBuzzRoot(
+  home: string, channelId: string, eventId: string,
+): { qitemId: string; recipient: string; seat: string } | null {
+  if (!EVENT_ID.test(eventId)) return null;
+  const records = Object.values(loadLedger(buzzLedgerPath(home)).records);
+  const matches = records.filter((record) =>
+    record.state === "confirmed"
+    && record.eventId?.toLowerCase() === eventId.toLowerCase()
+    && record.channelId.toLowerCase() === channelId.toLowerCase());
+  if (matches.length !== 1 || !matches[0]?.qitemId || !matches[0]?.sourceSeat) return null;
+  const record = matches[0];
+  return { qitemId: record.qitemId!, recipient: record.destination, seat: record.sourceSeat! };
+}
+
 /** Mark provider + channel in durable decisions before enqueue; refuse relay/unknown humans. */
-export function prepareBuzzDecision(decision: OutboundDecision, opts: Pick<BuzzOutboundOptions, "channelId" | "authorizedDestinations">): OutboundDecision {
+export function prepareBuzzDecision(decision: OutboundDecision, opts: Pick<BuzzOutboundOptions, "channelId" | "authorizedDestinations" | "destinationAllowed">): OutboundDecision {
   if (decision.op !== BUZZ_OUTBOUND_OP || !isObject(decision.payload)) {
     throw new Error("Buzz cannot prepare unsupported operation or payload");
   }
@@ -148,7 +175,8 @@ export function prepareBuzzDecision(decision: OutboundDecision, opts: Pick<BuzzO
     throw new Error("Buzz cannot adopt a decision marked for another channel");
   }
   if (!p.destinationSession || decision.entityBindingRef !== p.destinationSession
-    || !opts.authorizedDestinations.has(p.destinationSession)) {
+    || !opts.authorizedDestinations.has(p.destinationSession)
+    || (opts.destinationAllowed && !opts.destinationAllowed(p.destinationSession))) {
     throw new Error("Buzz destination not explicitly authorized");
   }
   if (typeof p.notificationKey !== "string" || !p.notificationKey) {
@@ -206,11 +234,15 @@ export class BuzzOutboundDelivery {
         destination: p.destinationSession!,
         contentHash: sha256(content),
         pubkey: this.opts.expectedPubkey,
+        qitemId: p.qitemId,
+        sourceSeat: p.sourceSession!,
       };
       const prior = ledger.records[key];
       if (prior && (
         prior.channelId !== match.channelId || prior.destination !== match.destination
         || prior.contentHash !== match.contentHash || prior.pubkey !== match.pubkey
+        || (prior.qitemId !== undefined && prior.qitemId !== match.qitemId)
+        || (prior.sourceSeat !== undefined && prior.sourceSeat !== match.sourceSeat)
       )) return { ok: false, class: "buzz-notification-changed-after-attempt" };
 
       const complete = (eventId: string): SubsystemDeliveryOutcome => {

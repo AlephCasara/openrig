@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -206,6 +207,66 @@ describe("Buzz inbound proof: authenticated sender mapping and durable custody",
     } finally {
       db.close();
     }
+  });
+
+  it("backfills a long history in timestamp-overlapping pages and commits every event once", async () => {
+    opts.limit = 80;
+    const all = Array.from({ length: 225 }, (_, i) => msg({
+      id: createHash("sha256").update("history-" + i).digest("hex"),
+      createdAt: 1_750_000_000 + i,
+      content: "Human reply " + i,
+    }));
+    let pages = 0;
+    opts.transport = {
+      getMessages: async ({ limit, before }) => {
+        pages++;
+        return all.filter((ev) => before === undefined || ev.createdAt < before)
+          .sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+      },
+    };
+    const first = await new BuzzInboundLab(opts).recoverHistory({ maxPages: 12 });
+    expect(first).toMatchObject({ ok: true, accepted: 225 });
+    expect(first.pages).toBeGreaterThanOrEqual(3);
+    expect(pages).toBeGreaterThanOrEqual(3);
+    expect(creates).toHaveLength(225);
+    const again = await new BuzzInboundLab(opts).recoverHistory({ maxPages: 12 });
+    expect(again).toMatchObject({ ok: true, accepted: 0 });
+    expect(creates).toHaveLength(225);
+  });
+
+  it("does not partially ingest an ambiguous same-second timestamp boundary", async () => {
+    opts.limit = 20;
+    const all = Array.from({ length: 32 }, (_, i) => msg({
+      id: createHash("sha256").update("tie-" + i).digest("hex"),
+      createdAt: 1_760_000_000,
+      content: "Same second " + i,
+    }));
+    opts.transport = {
+      getMessages: async ({ limit, before }) => all
+        .filter((ev) => before === undefined || ev.createdAt < before)
+        .slice(0, limit),
+    };
+    expect(await new BuzzInboundLab(opts).recoverHistory()).toMatchObject({
+      ok: false, reason: "buzz-ambiguous-timestamp-boundary", accepted: 0,
+    });
+    expect(creates).toHaveLength(0);
+  });
+
+  it("returns incomplete without queue side effects when recovery page budget is exhausted", async () => {
+    opts.limit = 2;
+    const all = Array.from({ length: 15 }, (_, i) => msg({
+      id: createHash("sha256").update("cap-" + i).digest("hex"),
+      createdAt: i + 1,
+    }));
+    opts.transport = {
+      getMessages: async ({ limit, before }) => all
+        .filter((ev) => before === undefined || ev.createdAt < before)
+        .sort((a, b) => b.createdAt - a.createdAt).slice(0, limit),
+    };
+    expect(await new BuzzInboundLab(opts).recoverHistory({ maxPages: 2 })).toMatchObject({
+      ok: false, reason: "buzz-recovery-page-limit", accepted: 0, pages: 2,
+    });
+    expect(creates).toHaveLength(0);
   });
 
   it("refuses simultaneous consumers using an exclusive lock", async () => {

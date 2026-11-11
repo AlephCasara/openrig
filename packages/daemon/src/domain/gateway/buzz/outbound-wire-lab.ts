@@ -53,6 +53,7 @@ export function buildBuzzOutboundLabWire(opts: BuzzOutboundLabOpts): BuzzOutboun
       const alerts = await opts.queue.listHumanAlerts(filter);
       return alerts.filter((p: QueueItem) =>
         !!p.destinationSession && opts.authorizedDestinations.has(p.destinationSession)
+        && (!opts.destinationAllowed || opts.destinationAllowed(p.destinationSession))
         && !p.sharedChannel && typeof p.notificationKey === "string" && p.notificationKey.length > 0);
     },
   };
