@@ -14,6 +14,63 @@ type ServiceHookAccess = {
 };
 
 describe("bootstrap Compose project identity", () => {
+  it("rolls back a replacement on its selected context when the predecessor used another engine", async () => {
+    const db = createFullTestDb();
+    try {
+      const rigRepo = new RigRepository(db);
+      const commands: string[] = [];
+      const adapter = new ComposeServicesAdapter(async cmd => {
+        commands.push(cmd);
+        if (cmd.includes("up -d")) throw new Error("test boot failure");
+        return "";
+      });
+      const serviceOrchestrator = new ServiceOrchestrator({ rigRepo, composeAdapter: adapter });
+      const dbHandle = { db };
+      const orchestrator = new BootstrapOrchestrator({
+        db, rigRepo, serviceOrchestrator, bootstrapRepo: dbHandle,
+        runtimeVerifier: dbHandle, installExecutor: dbHandle, packageInstallService: dbHandle,
+      } as ConstructorParameters<typeof BootstrapOrchestrator>[0]);
+      const predecessor = rigRepo.createRig("demo-rig");
+      rigRepo.setServicesRecord(predecessor.id, {
+        kind: "compose",
+        specJson: JSON.stringify({ kind: "compose", composeFile: "compose.yaml", dockerContext: "kiri" }),
+        rigRoot: process.cwd(), composeFile: "compose.yaml", projectName: "shared-project",
+      });
+      rigRepo.archiveRig(predecessor.id);
+      const current = rigRepo.createRig("demo-rig");
+      const yaml = [
+        'version: "0.2"',
+        "name: demo-rig",
+        "services:",
+        "  kind: compose",
+        "  compose_file: compose.yaml",
+        "  docker_context: docker-next",
+        "pods:",
+        "  - id: dev",
+        "    label: Development",
+        "    members:",
+        "      - id: impl",
+        "        agent_ref: local:agents/impl",
+        "        runtime: claude-code",
+        "        profile: default",
+        "        cwd: .",
+        "    edges: []",
+        "edges: []",
+        "",
+      ].join("\n");
+      const hook = await (orchestrator as unknown as ServiceHookAccess).buildServicePrelaunchHook(yaml, process.cwd(), [], []);
+      const result = await hook!(current.id, [predecessor.id]);
+
+      expect(result).toMatchObject({ ok: false, code: "service_boot_failed" });
+      expect(rigRepo.getServicesRecord(current.id)?.projectName).toBe("shared-project");
+      expect(commands.some(command => command.includes("docker --context 'docker-next' compose") && command.includes("up -d"))).toBe(true);
+      expect(commands.some(command => command.includes("docker --context 'docker-next' compose") && command.includes(" down"))).toBe(true);
+      expect(commands.some(command => command.includes("docker --context 'kiri' compose") && command.includes(" down"))).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
   it.each(["success", "failure", "explicit", "ambiguous"])("uses exact predecessors and protects retained projects (%s)", async (scenario) => {
     const db = createFullTestDb();
     try {

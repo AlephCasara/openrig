@@ -89,12 +89,13 @@ export function envRoutes(): Hono {
     const tailStr = c.req.query("tail");
     const tail = tailStr ? parseInt(tailStr, 10) : 100;
 
-    let spec: { profiles?: string[] } = {};
+    let spec: { dockerContext?: string; profiles?: string[] } = {};
     try { spec = JSON.parse(record.specJson); } catch { /* empty */ }
 
     const result = await composeAdapter.logs({
       composeFile: record.composeFile,
       projectName: record.projectName,
+      dockerContext: spec.dockerContext,
       profiles: spec.profiles,
       service: service || undefined,
       tail,

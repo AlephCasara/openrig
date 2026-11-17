@@ -150,12 +150,12 @@ export class ServiceOrchestrator {
     if (!record) {
       return { ok: true }; // No services — nothing to tear down
     }
-    const successor = this.rigRepo.getLiveServicesSuccessor(rigId, record.projectName);
+    const spec = this.parseSpec(record);
+    const successor = this.rigRepo.getLiveServicesSuccessor(rigId, record.projectName, spec?.dockerContext);
     if (successor) {
       return { ok: true, kept: `kept project ${record.projectName}: still used by rig ${successor.name} (${successor.id})` };
     }
 
-    const spec = this.parseSpec(record);
     const policy = opts?.policyOverride ?? spec?.downPolicy ?? "down";
 
     const result = await this.composeAdapter.down({

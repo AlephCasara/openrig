@@ -135,6 +135,8 @@ function isStoredServices(value: unknown): boolean {
   const services = value as Record<string, unknown>;
   if (services.kind !== "compose" || typeof services.composeFile !== "string") return false;
   if (services.projectName !== undefined && typeof services.projectName !== "string") return false;
+  if (services.dockerContext !== undefined
+    && (typeof services.dockerContext !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(services.dockerContext))) return false;
   if (services.profiles !== undefined
     && (!Array.isArray(services.profiles) || !services.profiles.every((entry) => typeof entry === "string"))) return false;
   if (services.downPolicy !== undefined
@@ -1131,16 +1133,28 @@ export class RigRepository {
   }
 
   /** A retained generation must not tear down a live generation's project. */
-  getLiveServicesSuccessor(rigId: string, projectName: string): { id: string; name: string } | null {
+  getLiveServicesSuccessor(rigId: string, projectName: string, dockerContext?: string): { id: string; name: string } | null {
     if (!this.hasRigColumn("archived_at")) return null;
-    return this.db.prepare(`
-      SELECT r.id, r.name FROM rig_services s JOIN rigs r ON r.id = s.rig_id
+    const candidates = this.db.prepare(`
+      SELECT r.id, r.name, s.spec_json AS specJson FROM rig_services s JOIN rigs r ON r.id = s.rig_id
       JOIN rigs predecessor ON predecessor.id = ?
       WHERE s.project_name = ? AND r.id != predecessor.id
         AND predecessor.archived_at IS NOT NULL AND r.archived_at IS NULL
         AND r.name = predecessor.name
-      ORDER BY r.created_at DESC LIMIT 1
-    `).get(rigId, projectName) as { id: string; name: string } | undefined ?? null;
+      ORDER BY r.created_at DESC
+    `).all(rigId, projectName) as Array<{ id: string; name: string; specJson: string }>;
+    for (const candidate of candidates) {
+      let candidateContext: string | undefined;
+      try {
+        const spec = JSON.parse(candidate.specJson) as { dockerContext?: unknown };
+        candidateContext = typeof spec.dockerContext === "string" ? spec.dockerContext : undefined;
+      } catch {
+        // Preserve legacy safety when a successor's runtime target cannot be read.
+        return { id: candidate.id, name: candidate.name };
+      }
+      if (candidateContext === dockerContext) return { id: candidate.id, name: candidate.name };
+    }
+    return null;
   }
 
   getServicesRecord(rigId: string): RigServicesRecord | null {

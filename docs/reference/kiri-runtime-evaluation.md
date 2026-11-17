@@ -82,7 +82,10 @@ managed Compose lifecycle call with `docker --context <name>`. The default is
 unchanged, and OpenRig never switches the user's global Docker context. The
 setting covers service preflight, start, status, logs, teardown and project
 container lookup. Checkpoint hooks remain user-authored shell commands and
-must name their own context if they invoke Docker. Example:
+must name their own context if they invoke Docker. Compose project names are
+scoped to their Docker context during rig replacement and teardown, so equal
+names on separate engines do not cause OpenRig to preserve or remove the wrong
+stack. Example:
 
 ```yaml
 services:

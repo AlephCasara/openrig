@@ -6,6 +6,7 @@ function createApp(deps: {
   getServicesRecord: (rigId: string) => unknown;
   captureReceipt?: (rigId: string) => unknown;
   teardown?: (rigId: string, opts?: unknown) => unknown;
+  logs?: (opts: Record<string, unknown>) => unknown;
 }): Hono {
   const app = new Hono();
   app.use("*", async (c, next) => {
@@ -14,7 +15,7 @@ function createApp(deps: {
       ? { captureReceipt: deps.captureReceipt, teardown: deps.teardown }
       : undefined;
     c.set("serviceOrchestrator" as never, orchestrator);
-    c.set("composeAdapter" as never, undefined);
+    c.set("composeAdapter" as never, deps.logs ? { logs: deps.logs } : undefined);
     await next();
   });
   app.route("/api/rigs/:rigId/env", envRoutes());
@@ -80,6 +81,26 @@ describe("env routes", () => {
     const commands = surfaces["commands"] as Array<{ name: string; command: string }>;
     expect(commands).toHaveLength(1);
     expect(commands[0]!.name).toBe("Vault status");
+  });
+
+  it("GET /env/logs uses the rig's selected Docker context", async () => {
+    let captured: Record<string, unknown> | undefined;
+    const app = createApp({
+      getServicesRecord: () => ({
+        rigId: "rig-1", kind: "compose",
+        specJson: JSON.stringify({ kind: "compose", dockerContext: "kiri", profiles: ["db"] }),
+        composeFile: "/tmp/svc.yaml", projectName: "test-svc",
+      }),
+      logs: (opts) => { captured = opts; return { ok: true, output: "Kiri logs" }; },
+    });
+
+    const res = await app.request("/api/rigs/rig-1/env/logs?service=db&tail=25");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, output: "Kiri logs" });
+    expect(captured).toMatchObject({
+      composeFile: "/tmp/svc.yaml", projectName: "test-svc", dockerContext: "kiri",
+      profiles: ["db"], service: "db", tail: 25,
+    });
   });
 
   const SERVICE_RECORD = {

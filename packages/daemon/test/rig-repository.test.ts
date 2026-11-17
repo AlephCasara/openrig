@@ -185,6 +185,27 @@ describe("RigRepository", () => {
     expect(repo.getLiveServicesSuccessor(predecessor.id, "shared-project")).toEqual({ id: live.id, name: "same-name" });
   });
 
+  it("treats a Compose project on another Docker context as a different runtime target", () => {
+    const live = repo.createRig("same-name");
+    const predecessor = repo.createRig("same-name");
+    repo.setServicesRecord(live.id, {
+      kind: "compose",
+      specJson: JSON.stringify({ kind: "compose", composeFile: "compose.yaml" }),
+      rigRoot: "/tmp", composeFile: "compose.yaml", projectName: "shared-project",
+    });
+    repo.setServicesRecord(predecessor.id, {
+      kind: "compose",
+      specJson: JSON.stringify({ kind: "compose", composeFile: "compose.yaml", dockerContext: "kiri" }),
+      rigRoot: "/tmp", composeFile: "compose.yaml", projectName: "shared-project",
+    });
+    expect(repo.archiveRig(predecessor.id)).toBe(true);
+
+    expect(repo.getLiveServicesSuccessor(predecessor.id, "shared-project", "kiri")).toBeNull();
+    expect(repo.getLiveServicesSuccessor(predecessor.id, "shared-project")).toEqual({
+      id: live.id, name: "same-name",
+    });
+  });
+
   it("deleteRig cascades — nodes and edges gone", () => {
     const rig = repo.createRig("test-rig");
     const n1 = repo.addNode(rig.id, "orchestrator");
