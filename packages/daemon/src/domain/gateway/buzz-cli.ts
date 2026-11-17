@@ -17,6 +17,8 @@ export type BuzzRunner = (args: readonly string[], stdin?: string) => Promise<st
 export interface BuzzCliOptions {
   /** Optional explicit executable path (never a shell command). */
   binary?: string;
+  /** Pin sends and reads to the same relay used by authenticated history queries. */
+  relayUrl?: string;
   /** Injected for deterministic tests; no network/process in tests. */
   runner?: BuzzRunner;
   timeoutMs?: number;
@@ -144,9 +146,11 @@ export function makeBuzzCliRunner(binary = "buzz", timeoutMs = DEFAULT_TIMEOUT_M
 
 export class BuzzCliClient {
   private readonly runner: BuzzRunner;
+  private readonly relayUrl: string | undefined;
 
   constructor(opts: BuzzCliOptions = {}) {
     this.runner = opts.runner ?? makeBuzzCliRunner(opts.binary, opts.timeoutMs);
+    this.relayUrl = opts.relayUrl;
   }
 
   async sendMessage(input: { channelId: string; content: string; replyTo?: string }): Promise<BuzzPostReceipt> {
@@ -156,6 +160,7 @@ export class BuzzCliClient {
     }
     if (input.replyTo !== undefined) requireEventId(input.replyTo);
     const args = ["messages", "send", "--channel", input.channelId, "--content", "-"];
+    if (this.relayUrl) args.push("--relay", this.relayUrl);
     if (input.replyTo) args.push("--reply-to", input.replyTo);
     // --content - reads stdin, so neither secrets nor message text appear in ps.
     const raw = parseCliJson(await this.runner(args, input.content));
@@ -177,6 +182,7 @@ export class BuzzCliClient {
       throw new Error("Buzz message since must be a non-negative Unix timestamp");
     }
     const args = ["messages", "get", "--channel", input.channelId, "--limit", String(limit), "--kinds", "9"];
+    if (this.relayUrl) args.push("--relay", this.relayUrl);
     if (input.since !== undefined) args.push("--since", String(input.since));
     const raw = parseCliJson(await this.runner(args));
     if (!Array.isArray(raw)) throw new Error("Buzz CLI returned invalid message batch");

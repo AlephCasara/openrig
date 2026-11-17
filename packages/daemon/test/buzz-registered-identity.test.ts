@@ -80,6 +80,7 @@ describe("Buzz first-class registered identity and durable reply root", () => {
 
   it("resolves a root ONLY from a confirmed outbound journal and routes a reply via canonical registry", async () => {
     expect(addHumanFragment(human("jane"), home).ok).toBe(true);
+    let postedContent = "";
     const rows = new Map<string, QueueItem>([["ask-1", {
       qitemId: "ask-1", sourceSession: "agent@rig", destinationSession: "jane@external",
       body: "Original ask",
@@ -88,8 +89,8 @@ describe("Buzz first-class registered identity and durable reply root", () => {
       home, channelId: channel, expectedPubkey: self,
       authorizedDestinations: new Set(["jane@external"]),
       transport: {
-        sendMessage: async () => ({ eventId: rootEvent }),
-        getMessages: async () => [],
+        sendMessage: async ({ content }) => { postedContent = content; return { eventId: rootEvent }; },
+        getMessages: async () => [{ id: rootEvent, authorPubkey: self, channelId: channel, content: postedContent, createdAt: 1762800001 }],
       },
     });
     const decision = prepareBuzzDecision({
@@ -104,8 +105,9 @@ describe("Buzz first-class registered identity and durable reply root", () => {
     expect(resolveConfirmedBuzzRoot(home, channel, rootEvent)).toBeNull();
     expect(await delivery.deliver(decision)).toEqual({ ok: true });
     expect(resolveConfirmedBuzzRoot(home, other, rootEvent)).toBeNull();
-    expect(resolveConfirmedBuzzRoot(home, channel, rootEvent)).toEqual({
+    expect(resolveConfirmedBuzzRoot(home, channel, rootEvent)).toMatchObject({
       qitemId: "ask-1", recipient: "jane@external", seat: "agent@rig",
+      notificationKey: "ask-1:episode-1", eventCreatedAt: 1762800001,
     });
     const created: unknown[] = [];
     const lab = () => buildRegisteredBuzzInboundLab({
@@ -160,10 +162,14 @@ describe("Buzz first-class registered identity and durable reply root", () => {
 
   it("refuses inbound mapping when confirmed root no longer matches original queue row", async () => {
     expect(addHumanFragment(human("jane"), home).ok).toBe(true);
+    let postedContent = "";
     const root = new BuzzOutboundDelivery({
       home, channelId: channel, expectedPubkey: self,
       authorizedDestinations: new Set(["jane@external"]),
-      transport: { sendMessage: async () => ({ eventId: rootEvent }), getMessages: async () => [] },
+      transport: {
+        sendMessage: async ({ content }) => { postedContent = content; return { eventId: rootEvent }; },
+        getMessages: async () => [{ id: rootEvent, authorPubkey: self, channelId: channel, content: postedContent, createdAt: 1762800001 }],
+      },
     });
     const d = prepareBuzzDecision({
       kind: "outbound_decision", decisionId: "d1", op: "post_message",
@@ -273,6 +279,9 @@ describe("Buzz first-class registered identity and durable reply root", () => {
       const queue = makeQueuePorts(repo, { loadHumanRegistry: registry, sharedChannels: () => [] });
       const alerts = await queue.listHumanAlerts({ minimumLevel: "NOTICE" });
       expect(alerts.some((a) => a.qitemId === created.qitemId)).toBe(false);
+      const buzzQueue = makeQueuePorts(repo, { loadHumanRegistry: registry, sharedChannels: () => [], provider: "buzz" });
+      const buzzAlerts = await buzzQueue.listHumanAlerts({ minimumLevel: "NOTICE" });
+      expect(buzzAlerts.some((a) => a.qitemId === created.qitemId)).toBe(true);
     } finally {
       db.close();
     }

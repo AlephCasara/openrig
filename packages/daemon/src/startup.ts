@@ -2796,6 +2796,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // no drivers) — `rig slack status` names what is missing.
   const { GatewaySubsystem } = await import("./domain/gateway/gateway-subsystem.js");
   const { buildSlackGatewayWire, makeHumanReplyResolver } = await import("./domain/gateway/slack/slack-subsystem.js");
+  const { buildBuzzGatewayWire } = await import("./domain/gateway/buzz/buzz-gateway.js");
   const { buildSelectedGatewayWire } = await import("./domain/gateway/provider-selection.js");
   const { createRelayInboundHandler } = await import("./domain/gateway/relay-inbound.js");
   const effectiveOpenRigHome = getOpenRigHome();
@@ -2803,12 +2804,19 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     home: effectiveOpenRigHome,
     wire: () => buildSelectedGatewayWire({
       home: effectiveOpenRigHome,
-      // Slack remains the byte-for-byte equivalent default path. Explicit Buzz
-      // selection fails closed until the outbound/inbound wire is complete.
+      // Slack remains the default path. Buzz is constructed only after explicit
+      // selection and starts its CLI/history services post-bind.
       slack: () => buildSlackGatewayWire({
         home: effectiveOpenRigHome,
         queueRepo: queueRepoInstance,
         resolveHumanReply: makeHumanReplyResolver(queueRepoInstance, deps.missionControlWriteContract, effectiveOpenRigHome),
+        log: (m) => console.log(`[gateway] ${m}`),
+      }),
+      buzz: (settings) => buildBuzzGatewayWire({
+        home: effectiveOpenRigHome,
+        settings,
+        queueRepo: queueRepoInstance,
+        humanReplyActions: deps.missionControlWriteContract,
         log: (m) => console.log(`[gateway] ${m}`),
       }),
     }),

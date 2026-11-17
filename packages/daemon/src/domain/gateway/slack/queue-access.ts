@@ -211,7 +211,7 @@ export async function seedBacklogAsHistory(opts: {
  *  no `-A` scope trap (list() here is repository-wide), no bounded-body N+1 (rows carry bodies). */
 export function makeQueuePorts(
   queueRepo: QueueRepository,
-  opts: { loadHumanRegistry?: () => LoadResult; sharedChannels?: () => ReadonlyArray<{ address: string }> } = {},
+  opts: { loadHumanRegistry?: () => LoadResult; sharedChannels?: () => ReadonlyArray<{ address: string }>; provider?: "slack" | "buzz" } = {},
 ): InboundQueuePort & OutboundQueuePort & { listOpenAsks(filter: AlertFilterOpts): Promise<OpenAskEpisode[]> } {
   /** Each active row's current owner-notification episode, projected to its person or shared channel. Posted episodes
    *  are skipped unless asked for (the alert sweep never wants them). Null when nobody is registered.
@@ -226,16 +226,17 @@ export function makeQueuePorts(
     if (!people) return null;
     const channels = (opts.sharedChannels ?? (() => sharedChannelAddresses()))();
     // A person with no connector binding is reached in the Feed and Steering only, so nothing posts for them.
-    // Preserve legacy Slack and relay eligibility exactly, including pane-bound
-    // humans with non-primary connectors. Exclude only explicitly Buzz-primary
-    // humans so their queue notifications cannot leak into the Slack wire.
-    const slackPeople = people.filter((person) => person.connectorBindings.length > 0
-      && !person.connectorBindings.some((binding) => binding.role === "primary" && binding.kind === "buzz"));
+    // Preserve legacy Slack and relay eligibility exactly unless the optional
+    // Buzz provider explicitly requests its own primary bindings.
+    const providerPeople = opts.provider === "buzz"
+      ? people.filter((person) => person.connectorBindings.some((binding) => binding.role === "primary" && binding.kind === "buzz"))
+      : people.filter((person) => person.connectorBindings.length > 0
+        && !person.connectorBindings.some((binding) => binding.role === "primary" && binding.kind === "buzz"));
     const episodes = queueRepo.transitionLog.activeOwnerNotificationEpisodes(includePosted);
     return episodes.flatMap(({ qitemId, transition, posted }) => {
       const row = queueRepo.getById(qitemId);
       if (!row) return [];
-      const item = project(row, transition, slackPeople, channels);
+      const item = project(row, transition, providerPeople, channels);
       return item ? [{ item, posted }] : [];
     });
   };

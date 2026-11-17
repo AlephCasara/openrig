@@ -66,6 +66,24 @@ describe("Buzz experimental CLI transport boundary", () => {
       .rejects.toThrow(/event ID/);
   });
 
+  it("pins both send and read commands to the configured relay", async () => {
+    const relayUrl = "http://127.0.0.1:45201";
+    const calls: string[][] = [];
+    const client = new BuzzCliClient({
+      relayUrl,
+      runner: async (args) => {
+        calls.push([...args]);
+        return args[1] === "send" ? JSON.stringify(post) : JSON.stringify([replyEvent]);
+      },
+    });
+    await client.sendMessage({ channelId: channel, content: "message" });
+    await client.getMessages({ channelId: channel, limit: 2 });
+    expect(calls).toEqual([
+      ["messages", "send", "--channel", channel, "--content", "-", "--relay", relayUrl],
+      ["messages", "get", "--channel", channel, "--limit", "2", "--kinds", "9", "--relay", relayUrl],
+    ]);
+  });
+
   it("does not accept rejection, malformed response or arbitrary stdout as delivery", async () => {
     for (const body of [
       JSON.stringify({ accepted: false, event_id: eventId }),

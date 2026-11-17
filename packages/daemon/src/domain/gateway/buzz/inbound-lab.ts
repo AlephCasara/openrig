@@ -22,6 +22,19 @@ export interface BuzzReplyRoot {
   recipient: string;
   /** The agent who authored the original ask. */
   seat: string;
+  /** The notification episode and verified signed root timestamp, when available. */
+  notificationKey?: string;
+  eventCreatedAt?: number;
+}
+
+export interface BuzzHumanReplyInput {
+  qitemId: string;
+  actorSession: string;
+  decision: string;
+  replyEventId: string;
+  replyCreatedAt: number;
+  rootNotificationKey?: string;
+  rootCreatedAt?: number;
 }
 
 export interface BuzzInboundTransport {
@@ -40,6 +53,8 @@ export interface BuzzInboundLabOpts {
   requireSignedEvents?: boolean;
   /** Must resolve ONLY a confirmed outbound event for this channel. */
   resolveConfirmedRoot: (eventId: string) => BuzzReplyRoot | null;
+  /** Optional continuation for a verified human reply; it must preserve approval gates. */
+  resolveHumanReply?: (input: BuzzHumanReplyInput) => Promise<"resolved" | "resolved-uncertain" | "already-resolved" | "not-applicable">;
   queue: Required<Pick<InboundQueuePort, "createQitem" | "getQitem">>;
   transport: BuzzInboundTransport;
   limit?: number;
@@ -256,6 +271,17 @@ export class BuzzInboundLab {
             const after = this.opts.queue.getQitem(request.qitemId);
             if (!after || !sameQitem(after, request)) throw error;
           }
+        }
+        if (this.opts.resolveHumanReply) {
+          await this.opts.resolveHumanReply({
+            qitemId: root.qitemId,
+            actorSession: human,
+            decision: ev.content,
+            replyEventId: ev.id,
+            replyCreatedAt: ev.createdAt,
+            ...(root.notificationKey ? { rootNotificationKey: root.notificationKey } : {}),
+            ...(root.eventCreatedAt === undefined ? {} : { rootCreatedAt: root.eventCreatedAt }),
+          });
         }
         ledger.entries[ev.id] = { state: "landed", qitemId: request.qitemId, fingerprint };
         writeLedger(this.ledgerFile, ledger);

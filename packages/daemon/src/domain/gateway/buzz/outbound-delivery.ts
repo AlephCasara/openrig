@@ -1,4 +1,4 @@
-// Experimental outbound-only Buzz transport. NOT connected to daemon startup.
+// Experimental Buzz outbound transport used by the opt-in GatewayWire.
 // Durable attempt-before-side-effect: a CLI timeout is ambiguous and MUST NOT be
 // blindly retried. Readback may positively reconcile; absence never proves failure.
 import {
@@ -43,6 +43,9 @@ export interface BuzzDeliveryRecord {
   /** Persisted only for new lab attempts; legacy entries without it are not reply roots. */
   qitemId?: string;
   sourceSeat?: string;
+  notificationKey?: string;
+  /** Verified event timestamp; absent means inbound answer ordering is uncertain. */
+  eventCreatedAt?: number;
   eventId?: string;
 }
 
@@ -78,6 +81,9 @@ function validRecord(v: unknown): v is BuzzDeliveryRecord {
     && typeof v.pubkey === "string" && OWNER.test(v.pubkey)
     && (v.qitemId === undefined || (typeof v.qitemId === "string" && v.qitemId.length > 0))
     && (v.sourceSeat === undefined || (typeof v.sourceSeat === "string" && v.sourceSeat.length > 0))
+    && (v.notificationKey === undefined || (typeof v.notificationKey === "string" && v.notificationKey.length > 0))
+    && (v.eventCreatedAt === undefined || (typeof v.eventCreatedAt === "number"
+      && Number.isSafeInteger(v.eventCreatedAt) && v.eventCreatedAt >= 0))
     && (v.state === "attempting" ? v.eventId === undefined
       : typeof v.eventId === "string" && EVENT_ID.test(v.eventId));
 }
@@ -152,16 +158,20 @@ function frozenPayload(decision: OutboundDecision, opts: BuzzOutboundOptions): B
  */
 export function resolveConfirmedBuzzRoot(
   home: string, channelId: string, eventId: string,
-): { qitemId: string; recipient: string; seat: string } | null {
+): { qitemId: string; recipient: string; seat: string; notificationKey?: string; eventCreatedAt?: number } | null {
   if (!EVENT_ID.test(eventId)) return null;
-  const records = Object.values(loadLedger(buzzLedgerPath(home)).records);
-  const matches = records.filter((record) =>
+  const records = Object.entries(loadLedger(buzzLedgerPath(home)).records);
+  const matches = records.filter(([, record]) =>
     record.state === "confirmed"
     && record.eventId?.toLowerCase() === eventId.toLowerCase()
     && record.channelId.toLowerCase() === channelId.toLowerCase());
-  if (matches.length !== 1 || !matches[0]?.qitemId || !matches[0]?.sourceSeat) return null;
-  const record = matches[0];
-  return { qitemId: record.qitemId!, recipient: record.destination, seat: record.sourceSeat! };
+  if (matches.length !== 1 || !matches[0]?.[1].qitemId || !matches[0]?.[1].sourceSeat) return null;
+  const [notificationKey, record] = matches[0];
+  return {
+    qitemId: record.qitemId!, recipient: record.destination, seat: record.sourceSeat!,
+    ...(record.notificationKey ?? notificationKey ? { notificationKey: record.notificationKey ?? notificationKey } : {}),
+    ...(record.eventCreatedAt === undefined ? {} : { eventCreatedAt: record.eventCreatedAt }),
+  };
 }
 
 /** Mark provider + channel in durable decisions before enqueue; refuse relay/unknown humans. */
@@ -236,6 +246,7 @@ export class BuzzOutboundDelivery {
         pubkey: this.opts.expectedPubkey,
         qitemId: p.qitemId,
         sourceSeat: p.sourceSession!,
+        notificationKey: key,
       };
       const prior = ledger.records[key];
       if (prior && (
@@ -245,8 +256,8 @@ export class BuzzOutboundDelivery {
         || (prior.sourceSeat !== undefined && prior.sourceSeat !== match.sourceSeat)
       )) return { ok: false, class: "buzz-notification-changed-after-attempt" };
 
-      const complete = (eventId: string): SubsystemDeliveryOutcome => {
-        ledger.records[key] = { ...match, state: "confirmed", eventId };
+      const complete = (eventId: string, eventCreatedAt?: number): SubsystemDeliveryOutcome => {
+        ledger.records[key] = { ...match, state: "confirmed", eventId, ...(eventCreatedAt === undefined ? {} : { eventCreatedAt }) };
         saveLedger(this.ledgerFile, ledger);
         return { ok: true };
       };
@@ -262,7 +273,7 @@ export class BuzzOutboundDelivery {
           e.channelId.toLowerCase() === this.opts.channelId.toLowerCase()
           && e.authorPubkey.toLowerCase() === this.opts.expectedPubkey.toLowerCase()
           && e.content === content && EVENT_ID.test(e.id));
-        if (matches.length === 1) return complete(matches[0]!.id);
+        if (matches.length === 1) return complete(matches[0]!.id, matches[0]!.createdAt);
         return { ok: false, class: matches.length > 1 ? "buzz-duplicate-confirmations" : "buzz-delivery-outcome-unknown" };
       }
 
@@ -273,7 +284,18 @@ export class BuzzOutboundDelivery {
       try { receipt = await this.opts.transport.sendMessage({ channelId: this.opts.channelId, content }); }
       catch { return { ok: false, class: "buzz-delivery-outcome-unknown" }; }
       if (!EVENT_ID.test(receipt.eventId)) return { ok: false, class: "buzz-receipt-invalid" };
-      return complete(receipt.eventId);
+      // A CLI acceptance receipt confirms delivery, but answer ordering needs
+      // the signed event timestamp. Read back the exact event before recording
+      // a reply root; a missing readback remains uncertain and is reconciled.
+      let readback: BuzzMessage[];
+      try { readback = await this.opts.transport.getMessages({ channelId: this.opts.channelId, limit: 200 }); }
+      catch { return { ok: false, class: "buzz-delivery-readback-unavailable" }; }
+      const verified = readback.filter((event) => event.id === receipt.eventId
+        && event.authorPubkey.toLowerCase() === this.opts.expectedPubkey.toLowerCase()
+        && event.channelId.toLowerCase() === this.opts.channelId.toLowerCase()
+        && event.content === content);
+      if (verified.length !== 1) return { ok: false, class: "buzz-delivery-readback-incomplete" };
+      return complete(receipt.eventId, verified[0]!.createdAt);
     } catch {
       return { ok: false, class: "buzz-ledger-unavailable" };
     } finally {

@@ -1,6 +1,6 @@
-// Standalone, outbound-only Buzz queue laboratory. NEVER wired into daemon startup.
-// This reuses OpenRig's durable dispatcher and queue sweep, with an explicit
-// allow-list and provider provenance. No authenticated human inbound exists yet.
+// Shared Buzz outbound implementation for the isolated lab and optional runtime.
+// It reuses OpenRig's durable dispatcher and queue sweep, with explicit
+// destination admission and provider provenance.
 import { join } from "node:path";
 import { DispatchBuffer } from "../dispatch-buffer.js";
 import { buildInProcessWire, type GatewayWire } from "../gateway-subsystem.js";
@@ -25,12 +25,9 @@ export interface BuzzOutboundLabWire extends GatewayWire {
 }
 
 /**
- * A lab-only queue path. An existing untagged Slack/relay decision blocks
- * construction rather than being replayed to the wrong transport.
- *
- * This intentionally does not satisfy an operational Buzz GatewayWire contract:
- * the caller MUST NOT register it as the production provider while inbound
- * authentication, human routing, provider switch drain and replay are pending.
+ * Build Buzz outbound delivery. An existing untagged Slack/relay decision blocks
+ * construction rather than being replayed to the wrong transport. Runtime callers
+ * pair this with authenticated inbound recovery in buzz-gateway.ts.
  */
 export function buildBuzzOutboundLabWire(opts: BuzzOutboundLabOpts): BuzzOutboundLabWire {
   if (opts.authorizedDestinations.size === 0) throw new Error("Buzz lab requires explicit destination allow-list");
