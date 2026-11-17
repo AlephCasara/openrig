@@ -106,9 +106,14 @@ temporary context was removed.
 
 Kiri documents Linux packages as tested on Ubuntu and Fedora, not NixOS. The
 local check proves API reachability on this machine but not a working service
-stack or an OpenRig end-to-end run. On Linux, Kiri group membership is
-root-equivalent; evaluating a root-managed Kiri service requires an explicitly
-authorized disposable host. The production VPS remains untouched.
+stack. OpenRig's actual `ComposeServicesAdapter` was also run against that
+temporary context: its context-specific Compose preflight succeeded and its
+status call returned `ok: true` with no containers. Real container creation is
+refused by the engine before OpenRig can verify readiness or teardown. This
+proves the Kiri API and OpenRig status path, not an end-to-end service-backed
+rig. On Linux, Kiri group membership is root-equivalent; evaluating a
+root-managed Kiri service requires an explicitly authorized disposable host.
+The production VPS remains untouched.
 
 Not measured here: idle/peak memory, Compose stack compatibility, or the
 Docker/Kiri comparison. The results table must be filled from a disposable,
