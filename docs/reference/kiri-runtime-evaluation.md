@@ -14,6 +14,8 @@ measurements of OpenRig's workload. The VM sleep claim applies to its VM-based
 platforms; it should not be used to infer Linux VPS memory use. See the [Kiri
 README](https://github.com/libracoder/kiri#readme) and its
 [`bench/results.json`](https://github.com/libracoder/kiri/blob/main/bench/results.json).
+The [feature and known-issues list](https://github.com/libracoder/kiri/blob/main/docs/features.md)
+covers Linux socket permissions and the BuildKit `host-gateway` limitation.
 
 ## Safety boundary
 
@@ -135,37 +137,68 @@ the host daemon root or touching the production VPS. The repeatable
 [`kiri-compose-smoke.mjs`](../../scripts/kiri-compose-smoke.mjs) script accepts
 the name of a preconfigured context through `KIRI_DOCKER_CONTEXT`.
 
-### Preliminary same-VM memory comparison
+### Same-VM memory and compatibility comparison
 
-A single five-minute sample was collected on the same Debian 12 KVM guest
-(1 GiB RAM, 2 vCPUs, no swap), first with Docker 20.10.24 and then Kiri 0.2.1.
-Both ran the same Compose project: PostgreSQL 16.4, Redis 7.4, and SeaweedFS
-3.80, with the same memory limits. PostgreSQL and Redis reported healthy under
-both engines. Docker and containerd were stopped during the Kiri phase. Kiri
-requires root on Linux; the service ran as root in this disposable guest.
+Three five-minute runs per engine were collected in the same disposable Debian
+12 KVM guest (1 GiB RAM, 2 vCPUs, no swap). The guest had Docker 20.10.24 and
+Kiri 0.2.1 installed; only one engine was active during a run. Kiri's Linux
+service ran as root. Every run used the same PostgreSQL 16.4, Redis 7.4 and
+SeaweedFS 3.80 images, with identical 192 MiB, 64 MiB and 256 MiB limits. The
+image digests were checked and matched between the two engines. The PostgreSQL
+and Redis health checks passed, and SeaweedFS answered its cluster status API.
 
-| Five-minute sample | Docker | Kiri |
+| Five-minute guest `MemAvailable` | Docker | Kiri |
 | --- | ---: | ---: |
-| Guest `MemAvailable` | 544 MiB | 645 MiB |
-| Runtime and workload process RSS, summed by process | about 319 MiB | about 134 MiB |
-| Workload process RSS (SeaweedFS, PostgreSQL, Redis) | about 108 MiB | about 112 MiB |
-| Engine RSS | `dockerd` 94 MiB + `containerd` 55 MiB + three shims about 58 MiB | `kiri` 21 MiB |
+| Run 1 | 563.0 MiB | 666.1 MiB |
+| Run 2 | 551.9 MiB | 675.7 MiB |
+| Run 3 | 558.5 MiB | 674.7 MiB |
+| Median (range) | **558.5 MiB** (552–563) | **674.7 MiB** (666–676) |
 
-In this sample, Kiri left 101 MiB more guest memory available while the
-workload process RSS was similar. This points to a meaningful reduction in
-engine overhead on this Linux setup. It is preliminary: this is one run, not
-the three-run median/range in the protocol above, and a 1 GiB guest does not
-establish the result on the production VPS. The host's memory use for QEMU is
-outside the guest `MemAvailable` measurement.
+Kiri left a median **116 MiB more guest memory available** after five minutes.
+The measured runtime-plus-workload process RSS was about 312 MiB for Docker and
+118 MiB for Kiri at the median (about 62% lower with Kiri). Workload process RSS
+itself was similar: about 109 MiB for Docker and 108 MiB for Kiri. The engine
+process set was about 203 MiB for Docker (`dockerd`, `containerd` and three
+shims) and 10 MiB for Kiri (`kiri`, with no shims). This points to the engine
+and shim processes as the source of the available-memory difference.
 
-The protocol called for MinIO, but its public Docker Hub and Quay images were
-not pullable during this run. SeaweedFS was used as the S3-compatible service;
-this is not a MinIO result. The raw process RSS values are more comparable
-than `docker stats` here because the engines report different cgroup memory
-totals for the same workload.
+One paired run was kept up for fifteen minutes. At that point Docker had
+537.5 MiB available and Kiri had 661.4 MiB, a 124 MiB difference. The fifteen-
+minute point was collected once per engine; the repeated median/range above is
+for the five-minute point. These are guest measurements; the QEMU host process
+and the rest of the workstation are outside guest `MemAvailable`. They are a
+repeatable result for this Linux workload, not a measurement of the production
+VPS.
 
-The implementation smoke was also rerun against this Kiri context using
-[`kiri-compose-smoke.mjs`](../../scripts/kiri-compose-smoke.mjs): OpenRig's
-Compose adapter passed preflight, start, running status, logs, and teardown.
-The full comparison still needs repeated runs, a longer peak sample, and
-compatibility/restart checks before making a general recommendation.
+Process RSS was read from the guest's `/proc`, summing the runtime processes
+and the SeaweedFS, PostgreSQL and Redis processes; common guest services and
+the test-only socket forwarder were excluded. This avoids comparing the two
+engines' differently reported cgroup totals. The protocol called for MinIO,
+but its public Docker Hub and Quay images were not pullable, so SeaweedFS 3.80
+was used as the S3-compatible service. This is not a MinIO result.
+
+The OpenRig adapter smoke in
+[`kiri-compose-smoke.mjs`](../../scripts/kiri-compose-smoke.mjs) passed against
+the Kiri context. It exercised Compose preflight, health checks, project
+labels, `ps --format json`, `exec`, logs, stop/start, restart, status and
+teardown. It verified that no project container remained. A PostgreSQL row
+survived `compose restart` under both engines; each unique project and its
+volumes were removed.
+
+The BuildKit caveat was reproduced with buildx 0.35.0: a `docker-container`
+builder booted, but a build using `--add-host host.docker.internal=host-gateway`
+failed with “host-gateway is not supported by the docker-container driver.”
+The same Dockerfile succeeded through `DOCKER_BUILDKIT=0 docker build`, where
+Kiri's own builder mapped the host gateway. OpenRig has no `host-gateway` or
+buildx call sites, so this limitation does not affect its current Compose
+service lifecycle; user-authored builds that use the docker-container builder
+need the documented workaround.
+
+Kiri 0.2.1 was released on 15 November 2026; the repository was created on
+2 November ([release](https://github.com/libracoder/kiri/releases/tag/v0.2.1)).
+Its Linux package runs a root-managed engine, and its `kiri` socket group is
+root-equivalent. The release asset digest was verified. OpenRig neither
+installs nor updates Kiri: the operator owns package updates and the context.
+This is a young project, so the results support an explicit experimental
+per-rig option, not making Kiri the default or recommending it for the
+production VPS without a separate host-specific run.
