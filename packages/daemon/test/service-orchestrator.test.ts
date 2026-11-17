@@ -51,6 +51,23 @@ describe("ComposeServicesAdapter", () => {
     expect(cmd).not.toContain("--wait"); // readiness is separate
   });
 
+  it("routes a rig's Compose lifecycle through its explicit Docker context", async () => {
+    const exec = vi.fn<ExecFn>().mockResolvedValue("");
+    const adapter = new ComposeServicesAdapter(exec);
+
+    await adapter.composeAvailable("kiri");
+    await adapter.up({ composeFile: "/tmp/docker-compose.yml", projectName: "my-rig", dockerContext: "kiri" });
+    await adapter.status({ composeFile: "/tmp/docker-compose.yml", projectName: "my-rig", dockerContext: "kiri" });
+    await adapter.down({ composeFile: "/tmp/docker-compose.yml", projectName: "my-rig", dockerContext: "kiri", policy: "down" });
+
+    expect(exec.mock.calls.map(([command]) => command)).toEqual([
+      "docker --context 'kiri' compose version 2>&1",
+      "docker --context 'kiri' compose -f '/tmp/docker-compose.yml' -p 'my-rig' up -d 2>&1",
+      "docker --context 'kiri' compose -f '/tmp/docker-compose.yml' -p 'my-rig' ps --format json 2>&1",
+      "docker --context 'kiri' compose -f '/tmp/docker-compose.yml' -p 'my-rig' down 2>&1",
+    ]);
+  });
+
   it("down calls docker compose down", async () => {
     const exec = vi.fn<ExecFn>().mockResolvedValue("");
     const adapter = new ComposeServicesAdapter(exec);

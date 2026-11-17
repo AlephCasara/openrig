@@ -78,10 +78,14 @@ export class ComposeServicesAdapter {
     this.exec = exec;
   }
 
+  private docker(context?: string): string {
+    return context ? `docker --context ${sq(context)}` : "docker";
+  }
+
   /** Whether Docker Compose v2 is available to this Docker. */
-  async composeAvailable(): Promise<{ ok: true } | { ok: false; message: string }> {
+  async composeAvailable(context?: string): Promise<{ ok: true } | { ok: false; message: string }> {
     try {
-      await this.exec("docker compose version 2>&1");
+      await this.exec(`${this.docker(context)} compose version 2>&1`);
       return { ok: true };
     } catch (err) {
       // Docker's own reason: not the exec's "Command failed" header, nor Docker's pointer to its help after it.
@@ -93,15 +97,15 @@ export class ComposeServicesAdapter {
 
   /** Whether a failed compose command failed because Compose v2 is missing. Only Docker's own words for that lead to the
    *  check; any other failure is reported as it came, with no further commands. */
-  private async composeMissingBehind(err: unknown): Promise<{ ok: true } | { ok: false; message: string }> {
-    return COMPOSE_MISSING_SIGNS.test(formatExecError(err)) ? this.composeAvailable() : { ok: true };
+  private async composeMissingBehind(err: unknown, context?: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    return COMPOSE_MISSING_SIGNS.test(formatExecError(err)) ? this.composeAvailable(context) : { ok: true };
   }
 
   /** The containers Docker has for a Compose project, read with plain `docker` (no Compose plugin needed); null when Docker
    *  can't be read. */
-  async projectContainers(projectName: string): Promise<string[] | null> {
+  async projectContainers(projectName: string, context?: string): Promise<string[] | null> {
     try {
-      const out = await this.exec(`docker ps -aq --filter ${sq(`label=com.docker.compose.project=${projectName}`)} 2>&1`);
+      const out = await this.exec(`${this.docker(context)} ps -aq --filter ${sq(`label=com.docker.compose.project=${projectName}`)} 2>&1`);
       return out.split(/\s+/).filter(Boolean);
     } catch {
       return null;
@@ -112,15 +116,16 @@ export class ComposeServicesAdapter {
   async up(opts: {
     composeFile: string;
     projectName: string;
+    dockerContext?: string;
     profiles?: string[];
   }): Promise<ComposeResult> {
     const args = this.baseArgs(opts.composeFile, opts.projectName, opts.profiles);
-    const cmd = `docker compose ${args} up -d 2>&1`;
+    const cmd = `${this.docker(opts.dockerContext)} compose ${args} up -d 2>&1`;
     try {
       await this.exec(cmd);
       return { ok: true };
     } catch (err) {
-      const compose = await this.composeMissingBehind(err);
+      const compose = await this.composeMissingBehind(err, opts.dockerContext);
       return { ok: false, code: "compose_up_failed", message: compose.ok ? formatExecError(err) : `${compose.message}\n${formatExecError(err)}` };
     }
   }
@@ -129,6 +134,7 @@ export class ComposeServicesAdapter {
   async down(opts: {
     composeFile: string;
     projectName: string;
+    dockerContext?: string;
     profiles?: string[];
     policy: "leave_running" | "down" | "down_and_volumes";
   }): Promise<ComposeResult> {
@@ -138,15 +144,15 @@ export class ComposeServicesAdapter {
 
     const args = this.baseArgs(opts.composeFile, opts.projectName, opts.profiles);
     const volumeFlag = opts.policy === "down_and_volumes" ? " --volumes" : "";
-    const cmd = `docker compose ${args} down${volumeFlag} 2>&1`;
+    const cmd = `${this.docker(opts.dockerContext)} compose ${args} down${volumeFlag} 2>&1`;
     try {
       await this.exec(cmd);
       return { ok: true };
     } catch (err) {
       // Without Compose v2 nothing of this project could have started through it. When plain Docker confirms the project
       // has no containers, there's nothing to take down; otherwise say what's missing.
-      const compose = await this.composeMissingBehind(err);
-      if (!compose.ok && (await this.projectContainers(opts.projectName))?.length === 0) return { ok: true };
+      const compose = await this.composeMissingBehind(err, opts.dockerContext);
+      if (!compose.ok && (await this.projectContainers(opts.projectName, opts.dockerContext))?.length === 0) return { ok: true };
       return { ok: false, code: "compose_down_failed", message: compose.ok ? formatExecError(err) : `${compose.message}\n${formatExecError(err)}` };
     }
   }
@@ -155,10 +161,11 @@ export class ComposeServicesAdapter {
   async status(opts: {
     composeFile: string;
     projectName: string;
+    dockerContext?: string;
     profiles?: string[];
   }): Promise<ComposeStatusResult> {
     const args = this.baseArgs(opts.composeFile, opts.projectName, opts.profiles);
-    const cmd = `docker compose ${args} ps --format json 2>&1`;
+    const cmd = `${this.docker(opts.dockerContext)} compose ${args} ps --format json 2>&1`;
     try {
       const output = await this.exec(cmd);
       const parseInput = this.extractComposePsPayload(output);
@@ -177,6 +184,7 @@ export class ComposeServicesAdapter {
   async logs(opts: {
     composeFile: string;
     projectName: string;
+    dockerContext?: string;
     profiles?: string[];
     service?: string;
     tail?: number;
@@ -184,7 +192,7 @@ export class ComposeServicesAdapter {
     const args = this.baseArgs(opts.composeFile, opts.projectName, opts.profiles);
     const serviceArg = opts.service ? ` ${sq(opts.service)}` : "";
     const tailArg = Number.isFinite(opts.tail) ? ` --tail ${opts.tail}` : "";
-    const cmd = `docker compose ${args} logs${tailArg}${serviceArg} 2>&1`;
+    const cmd = `${this.docker(opts.dockerContext)} compose ${args} logs${tailArg}${serviceArg} 2>&1`;
     try {
       const output = await this.exec(cmd);
       return { ok: true, output };

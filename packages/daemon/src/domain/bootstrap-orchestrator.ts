@@ -228,7 +228,10 @@ export class BootstrapOrchestrator {
             // A service bundle needs Docker Compose v2. An install stops here, before the install target is written or a
             // team is created. A plan says so and goes on: it may be previewing an install for a machine that has Compose.
             if (serviceBundleTarget && (opts.mode === "apply" || planningServices) && this.deps.serviceOrchestrator) {
-              const compose = await this.deps.serviceOrchestrator.composeAvailable();
+              const serviceBlock = parsedSpec?.services as Record<string, unknown> | undefined;
+              const compose = await this.deps.serviceOrchestrator.composeAvailable(
+                typeof serviceBlock?.docker_context === "string" ? serviceBlock.docker_context : undefined,
+              );
               if (!compose.ok && planningServices) {
                 warnings.push(`${compose.message} An install on this machine would stop before writing the install target or creating a team.`);
               } else if (!compose.ok) {

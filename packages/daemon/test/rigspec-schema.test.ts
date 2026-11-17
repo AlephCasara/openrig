@@ -38,6 +38,16 @@ const VALID_RIG = {
 };
 
 describe("RigSpec schema (pod-aware)", () => {
+  it("accepts a Docker context on Compose services and rejects unsafe context names", () => {
+    const spec = structuredClone(VALID_RIG) as Record<string, unknown>;
+    spec["services"] = { kind: "compose", compose_file: "compose.yaml", docker_context: "kiri" };
+    expect(RigSpecSchema.validate(spec).valid).toBe(true);
+    (spec["services"] as Record<string, unknown>)["docker_context"] = "kiri; touch /tmp/pwned";
+    const result = RigSpecSchema.validate(spec);
+    expect(result.valid).toBe(false);
+    expect(result.errors.join("\n")).toContain("services.docker_context");
+  });
+
   it.each(["model", "label"])("rejects non-string member %s values in canonical validation", field => {
     for (const value of [null, 7, {}, [], true]) {
       const rig = structuredClone(VALID_RIG);

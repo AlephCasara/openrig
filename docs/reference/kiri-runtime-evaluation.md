@@ -73,7 +73,43 @@ constraints, close the evaluation without adding Kiri support.
 
 ## Current status
 
-Not measured here: this workspace's Docker client cannot access its configured
-socket, and the production VPS is explicitly out of scope. The results table
-must be filled from a disposable, authorized Linux host before this evaluation
-can make a recommendation.
+### OpenRig integration prototype
+
+OpenRig now accepts a per-rig `services.docker_context` and prefixes each
+managed Compose lifecycle call with `docker --context <name>`. The default is
+unchanged, and OpenRig never switches the user's global Docker context. The
+setting covers service preflight, start, status, logs, teardown and project
+container lookup. Checkpoint hooks remain user-authored shell commands and
+must name their own context if they invoke Docker. Example:
+
+```yaml
+services:
+  kind: compose
+  compose_file: compose.yaml
+  docker_context: kiri
+```
+
+This is a selector prototype; it does not install, start or configure Kiri.
+
+### Local engine check (NixOS x86_64)
+
+The official `kiri-lite` 0.2.1 RPM was downloaded and its SHA-256 matched the
+digest published by the Kiri GitHub release. The RPM payload was extracted into
+`/tmp` without installing system files. Running `kiri daemon` as the current
+user worked and exposed the Engine API on a private socket. A temporary Docker
+context reached it and `docker info` reported `OS=Kiri`. Creating a container
+failed with Kiri's message that Linux host containers need root (`sudo kiri
+daemon`). Retrying in an unprivileged user namespace reached the daemon but
+container creation still failed with `Permission denied`. No container was
+created, no system service or global Docker socket was changed, and the
+temporary context was removed.
+
+Kiri documents Linux packages as tested on Ubuntu and Fedora, not NixOS. The
+local check proves API reachability on this machine but not a working service
+stack or an OpenRig end-to-end run. On Linux, Kiri group membership is
+root-equivalent; evaluating a root-managed Kiri service requires an explicitly
+authorized disposable host. The production VPS remains untouched.
+
+Not measured here: idle/peak memory, Compose stack compatibility, or the
+Docker/Kiri comparison. The results table must be filled from a disposable,
+authorized Linux host before recommending Kiri for the VPS workload.

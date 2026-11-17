@@ -42,6 +42,7 @@ const SERVICES_FIELD_EMITTERS: {
 } = {
   kind: (v) => ["kind", v],
   composeFile: (v) => ["compose_file", v],
+  dockerContext: (v) => ["docker_context", v],
   projectName: (v) => ["project_name", v],
   profiles: (v) => ["profiles", v],
   downPolicy: (v) => ["down_policy", v],

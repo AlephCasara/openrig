@@ -23,6 +23,16 @@ const VALID_RIG: RigSpec = {
 };
 
 describe("RigSpec codec (pod-aware)", () => {
+  it("round-trips an opt-in Docker context for Compose services", () => {
+    const spec: RigSpec = {
+      ...VALID_RIG,
+      services: { kind: "compose", composeFile: "compose.yaml", dockerContext: "kiri" },
+    };
+    const parsed = RigSpecCodec.parse(RigSpecCodec.serialize(spec)) as Record<string, unknown>;
+    expect(RigSpecSchema.validate(parsed).valid).toBe(true);
+    expect(RigSpecSchema.normalize(parsed).services?.dockerContext).toBe("kiri");
+  });
+
   it("serialize -> parse -> validate round-trips", () => {
     const yaml = RigSpecCodec.serialize(VALID_RIG);
     const parsed = RigSpecCodec.parse(yaml);

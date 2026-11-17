@@ -30,8 +30,8 @@ export class ServiceOrchestrator {
   }
 
   /** Whether Docker Compose v2 is available, before anything that needs it is set up. */
-  composeAvailable(): Promise<{ ok: true } | { ok: false; message: string }> {
-    return this.composeAdapter.composeAvailable();
+  composeAvailable(dockerContext?: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    return this.composeAdapter.composeAvailable(dockerContext);
   }
 
   /**
@@ -56,6 +56,7 @@ export class ServiceOrchestrator {
     const upResult = await this.composeAdapter.up({
       composeFile: record.composeFile,
       projectName: record.projectName,
+      dockerContext: spec.dockerContext,
       profiles: spec.profiles,
     });
 
@@ -75,6 +76,7 @@ export class ServiceOrchestrator {
         const statusResult = await this.composeAdapter.status({
           composeFile: record.composeFile,
           projectName: record.projectName,
+          dockerContext: spec.dockerContext,
           profiles: spec.profiles,
         });
 
@@ -124,6 +126,7 @@ export class ServiceOrchestrator {
     const statusResult = await this.composeAdapter.status({
       composeFile: record.composeFile,
       projectName: record.projectName,
+      dockerContext: spec.dockerContext,
       profiles: spec.profiles,
     });
     if (!statusResult.ok) {
@@ -158,6 +161,7 @@ export class ServiceOrchestrator {
     const result = await this.composeAdapter.down({
       composeFile: record.composeFile,
       projectName: record.projectName,
+      dockerContext: spec?.dockerContext,
       profiles: spec?.profiles,
       policy,
     });
@@ -182,6 +186,7 @@ export class ServiceOrchestrator {
     const statusResult = await this.composeAdapter.status({
       composeFile: record.composeFile,
       projectName: record.projectName,
+      dockerContext: spec?.dockerContext,
       profiles: spec?.profiles,
     });
     if (!statusResult.ok) {

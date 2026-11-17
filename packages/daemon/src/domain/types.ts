@@ -1423,6 +1423,8 @@ export interface RigServicesCheckpointHook {
 export interface RigServicesSpec {
   kind: "compose";
   composeFile: string;
+  /** Docker CLI context used for this rig's managed Compose services. Omit to use Docker's normal selection. */
+  dockerContext?: string;
   projectName?: string;
   profiles?: string[];
   downPolicy?: "leave_running" | "down" | "down_and_volumes";

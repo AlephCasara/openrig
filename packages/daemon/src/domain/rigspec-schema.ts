@@ -942,6 +942,10 @@ function validateServicesBlock(raw: unknown, prefix: string): string[] {
     if (pathErr) errors.push(pathErr);
   }
 
+  if (obj["docker_context"] !== undefined && (typeof obj["docker_context"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(obj["docker_context"] as string))) {
+    errors.push(`${prefix}.docker_context: must be a Docker context name containing only letters, numbers, dots, underscores, and hyphens`);
+  }
+
   if (obj["project_name"] !== undefined) {
     if (typeof obj["project_name"] !== "string") {
       errors.push(`${prefix}.project_name: must be a string`);
@@ -1102,6 +1106,7 @@ function normalizeServicesBlock(raw: unknown, rigName: string): RigServicesSpec 
   return {
     kind: obj["kind"] as "compose",
     composeFile: obj["compose_file"] as string,
+    dockerContext: obj["docker_context"] as string | undefined,
     projectName: obj["project_name"] as string | undefined ?? deriveComposeProjectName(rigName),
     profiles: Array.isArray(obj["profiles"]) ? (obj["profiles"] as string[]) : undefined,
     downPolicy: obj["down_policy"] as RigServicesSpec["downPolicy"] | undefined,
