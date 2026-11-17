@@ -181,6 +181,13 @@ describe("Codex resume options (#1400)", () => {
 });
 
 describe("joined native Codex identity", () => {
+  it("ignores a defunct foreground Codex child when proving the live seat process", async () => {
+    const base = rows();
+    const zombie: NativeProcessRow = { ...base[3]!, pid: 14, ppid: 13, state: "Z", argv: null };
+    const list = () => [...base, zombie];
+    expect((await check(list))?.process.pid).toBe(13);
+  });
+
   it("does not turn a BOM-prefixed Linux argument into the expected UUID", async () => {
     const argv = ["/opt/native/codex", "resume", `\ufeff${token}`];
     const list = () => rows().map(r => r.pid === 13 ? { ...r, command: argv.join(" "), argv } : r);

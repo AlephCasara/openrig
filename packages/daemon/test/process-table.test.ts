@@ -61,11 +61,11 @@ describe("readProcTable", () => {
       42: { stat: stat(42, "sh", "Z", 40, 41, 41, 360_099), cmdline: "" },
     });
     expect((await readProcTable(root)).sort((a, b) => a.pid - b.pid)).toEqual([
-      { pid: 1, ppid: 0, pgid: 1, tpgid: -1, executableName: "systemd", startedAt: "Tue Oct  6 09:00:12 2026", command: "/sbin/init splash" },
-      { pid: 2, ppid: 0, pgid: 0, tpgid: -1, executableName: "kworker/u32:4-e", startedAt: "Tue Oct  6 09:00:00 2026", command: "[kworker/u32:4-events_unbound]" },
-      { pid: 40, ppid: 1, pgid: 40, tpgid: -1, executableName: "tmux: server (x", startedAt: "Tue Oct  6 09:05:01 2026", command: "tmux new-session -d" },
-      { pid: 41, ppid: 40, pgid: 41, tpgid: 41, executableName: "claude", startedAt: "Tue Oct  6 10:00:00 2026", command: "claude --resume tok-1 a.b x y ??" },
-      { pid: 42, ppid: 40, pgid: 41, tpgid: 41, executableName: "sh", startedAt: "Tue Oct  6 10:00:00 2026", command: "[sh] <defunct>" },
+      { pid: 1, ppid: 0, pgid: 1, tpgid: -1, state: "S", executableName: "systemd", startedAt: "Tue Oct  6 09:00:12 2026", command: "/sbin/init splash" },
+      { pid: 2, ppid: 0, pgid: 0, tpgid: -1, state: "I", executableName: "kworker/u32:4-e", startedAt: "Tue Oct  6 09:00:00 2026", command: "[kworker/u32:4-events_unbound]" },
+      { pid: 40, ppid: 1, pgid: 40, tpgid: -1, state: "S", executableName: "tmux: server (x", startedAt: "Tue Oct  6 09:05:01 2026", command: "tmux new-session -d" },
+      { pid: 41, ppid: 40, pgid: 41, tpgid: 41, state: "S", executableName: "claude", startedAt: "Tue Oct  6 10:00:00 2026", command: "claude --resume tok-1 a.b x y ??" },
+      { pid: 42, ppid: 40, pgid: 41, tpgid: 41, state: "Z", executableName: "sh", startedAt: "Tue Oct  6 10:00:00 2026", command: "[sh] <defunct>" },
     ]);
   });
 
@@ -118,7 +118,7 @@ describe("readProcTable", () => {
     // A process that exited between its stat and its command line.
     fs.rmSync(path.join(root, "8", "cmdline"));
     expect(await readProcTable(root)).toEqual([
-      { pid: 7, ppid: 1, pgid: 7, tpgid: 7, executableName: "node", startedAt: expect.any(String), command: "[node]" },
+      { pid: 7, ppid: 1, pgid: 7, tpgid: 7, state: "S", executableName: "node", startedAt: expect.any(String), command: "[node]" },
     ]);
   });
 

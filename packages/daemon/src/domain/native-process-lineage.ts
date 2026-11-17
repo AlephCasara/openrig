@@ -14,6 +14,8 @@ export interface NativeProcessRow {
   argv?: string[] | null;
   pgid?: number;
   tpgid?: number;
+  /** OS process state; zombies cannot receive terminal input or identify a runtime. */
+  state?: string;
   executableName?: string;
   /** OS executable path, not argv[0], for otherwise unresolved Claude rows. */
   executablePath?: string;
@@ -664,6 +666,7 @@ function candidatesMatching(rows: NativeProcessRow[], panePid: number, runtime: 
   const matches: { process: NativeProcessRow; chain: NativeProcessRow[] }[] = [];
   const executable = runtime === "claude-code" ? "claude" : "codex";
   for (const row of rows) {
+    if (row.state?.startsWith("Z")) continue;
     const osExecutable = runtime === "claude-code" ? executableName(row.executableName ?? "") : row.executableName;
     if (row.pgid !== root.tpgid || row.tpgid !== root.tpgid) continue;
     if (runtime === "claude-code" ? !claudeRow(row) : osExecutable !== executable) continue;
