@@ -135,7 +135,37 @@ the host daemon root or touching the production VPS. The repeatable
 [`kiri-compose-smoke.mjs`](../../scripts/kiri-compose-smoke.mjs) script accepts
 the name of a preconfigured context through `KIRI_DOCKER_CONTEXT`.
 
-Not measured yet: idle/peak memory for a representative Compose stack. The
-same-VM Docker/Kiri comparison is still needed before recommending Kiri for the
-VPS workload; VM memory overhead is excluded from runtime-process RSS and must
-be reported separately from guest-visible memory.
+### Preliminary same-VM memory comparison
+
+A single five-minute sample was collected on the same Debian 12 KVM guest
+(1 GiB RAM, 2 vCPUs, no swap), first with Docker 20.10.24 and then Kiri 0.2.1.
+Both ran the same Compose project: PostgreSQL 16.4, Redis 7.4, and SeaweedFS
+3.80, with the same memory limits. PostgreSQL and Redis reported healthy under
+both engines. Docker and containerd were stopped during the Kiri phase. Kiri
+requires root on Linux; the service ran as root in this disposable guest.
+
+| Five-minute sample | Docker | Kiri |
+| --- | ---: | ---: |
+| Guest `MemAvailable` | 544 MiB | 645 MiB |
+| Runtime and workload process RSS, summed by process | about 319 MiB | about 134 MiB |
+| Workload process RSS (SeaweedFS, PostgreSQL, Redis) | about 108 MiB | about 112 MiB |
+| Engine RSS | `dockerd` 94 MiB + `containerd` 55 MiB + three shims about 58 MiB | `kiri` 21 MiB |
+
+In this sample, Kiri left 101 MiB more guest memory available while the
+workload process RSS was similar. This points to a meaningful reduction in
+engine overhead on this Linux setup. It is preliminary: this is one run, not
+the three-run median/range in the protocol above, and a 1 GiB guest does not
+establish the result on the production VPS. The host's memory use for QEMU is
+outside the guest `MemAvailable` measurement.
+
+The protocol called for MinIO, but its public Docker Hub and Quay images were
+not pullable during this run. SeaweedFS was used as the S3-compatible service;
+this is not a MinIO result. The raw process RSS values are more comparable
+than `docker stats` here because the engines report different cgroup memory
+totals for the same workload.
+
+The implementation smoke was also rerun against this Kiri context using
+[`kiri-compose-smoke.mjs`](../../scripts/kiri-compose-smoke.mjs): OpenRig's
+Compose adapter passed preflight, start, running status, logs, and teardown.
+The full comparison still needs repeated runs, a longer peak sample, and
+compatibility/restart checks before making a general recommendation.
