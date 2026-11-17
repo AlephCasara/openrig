@@ -28,10 +28,11 @@ References: https://github.com/block/buzz/tree/main/crates/buzz-cli and https://
 - no shell and no process before a method call;
 - message body via stdin, explicit timeout and bounded stdout;
 - bounded `messages get` batches and required channel/author/kind metadata;
+- independent Nostr event ID and Schnorr signature verification before author identity is exposed;
 - send receipt refusal unless the relay reports acceptance and a valid event ID;
-- channel and thread parsing suitable for later inbox integration.
+- stable timestamp/ID ordering and a persisted inbound read cursor with a five-minute overlap; a full page is refused without advancing the cursor.
 
-Tests cover both an injected runner and a real local child process with a CLI-shaped executable (stdin, stdout, exit failures and timeout). The optional loopback smoke test exercises a **real upstream Buzz 1.0.0 CLI** against a strictly local fake HTTP relay. It verifies signed Nostr event structure, accepted send receipts, threaded replies and reading messages through this adapter without starting OpenRig.
+Tests cover both an injected runner and a real local child process with a CLI-shaped executable (stdin, stdout, exit failures and timeout). The optional loopback smoke test exercises a **real upstream Buzz CLI** against a strictly local fake HTTP relay. It verifies signed Nostr event structure, accepted send receipts, threaded replies, independent signature verification, registered-human inbound routing and durable deduplication without starting OpenRig.
 
 Run the optional test after obtaining the upstream Buzz CLI executable (e.g. unpack the Linux release archive into a private scratch directory without installing it):
 
@@ -39,7 +40,7 @@ Run the optional test after obtaining the upstream Buzz CLI executable (e.g. unp
 BUZZ_CLI_BIN=/absolute/path/to/buzz node --import tsx scripts/buzz-cli-loopback-smoke.mjs
 ```
 
-The test binds to `127.0.0.1` on a dynamically selected port, generates an ephemeral signing key, explicitly overrides relay settings and closes its HTTP server afterward. **Its relay is simulated**, so it does **not** establish relay-side signature verification, real Buzz authentication/permissions, network resilience, durable replay, inbound human authorization or real end-to-end interoperability.
+The test binds to `127.0.0.1` on a dynamically selected port, generates ephemeral signing keys, explicitly overrides relay settings and closes its HTTP server afterward. **Its relay is simulated**, so it does **not** establish relay-side authorization, real Buzz permissions, network resilience, complete durable replay, or the full OpenRig human-approval path. The adapter's independent signature verifier is exercised against signed events returned by the real upstream CLI.
 
 ## Independent real Buzz relay verification
 
@@ -53,7 +54,7 @@ The launcher publishes only the relay's dynamic localhost port, caps service CPU
 
 **Authentication verified:** Buzz's NIP-43 relay-wide membership and private-channel membership are independent. With NIP-43 enforced, a channel member was denied relay access until the owner minted a NIP-98 authenticated invite, which that second identity claimed with its own NIP-98 identity. The subsequent cross-identity thread reply succeeded; revoking the channel membership then blocked new posts.
 
-**Event-signature verification:** A previously accepted event replayed with independently valid NIP-98 HTTP authorization was accepted (HTTP 200). Replaying that event with altered content and its *original Nostr Schnorr signature*, while generating a fresh valid NIP-98 HTTP signature covering the changed request body, was rejected (HTTP 400). The separate raw unauthenticated mutation was rejected with HTTP 401. The test-only NIP-98 signer lives inside the lab's separately pinned `nostr-tools` dependency and is not an OpenRig production dependency.
+**Event-signature verification:** A previously accepted event replayed with independently valid NIP-98 HTTP authorization was accepted (HTTP 200). Replaying that event with altered content and its *original Nostr Schnorr signature*, while generating a fresh valid NIP-98 HTTP signature covering the changed request body, was rejected (HTTP 400). The separate raw unauthenticated mutation was rejected with HTTP 401. The test-only NIP-98 signer lives inside the lab's separately pinned `nostr-tools` dependency; the daemon pins the same library for independent inbound event verification.
 
 ## Required before a production integration
 
@@ -62,8 +63,8 @@ The launcher publishes only the relay's dynamic localhost port, caps service CPU
 3. Refactor the gateway composition minimally, keeping the current durable queue/dispatcher, notification decisions, and relay paths. Never activate both Slack and Buzz for the same destination by accident.
 4. Implement Buzz outbound idempotency and durable correlation: when a relay accepts a post but the CLI response is lost, a retry must not blindly post again. Persist post/event relationships and reconcile uncertain outcomes.
 5. Implement inbound with authenticated sender mapping to registered humans, authorization at channel and conversation level, self-echo filtering, persistent event-ID deduplication, episode-aware thread attribution, typed answer handling, and no implicit approval.
-6. Address polling limitations. `--since` is second resolution and `--limit` is capped: a busy channel may exceed one page in a second; define deterministic pagination/backfill or use a Nostr subscription with bounded buffering and recovery.
+6. Address polling limitations. `--since` is second resolution and `--limit` is capped: the current persisted cursor replays a five-minute overlap and refuses saturated pages, but cannot page through a busy channel or recover arbitrary offline gaps. Define deterministic pagination/backfill or use a Nostr subscription with bounded buffering and recovery.
 7. Test restart/replay, duplicate messages, collisions, out-of-order messages, transient network failures, invalid key, missing binary, relay 429/5xx, concurrency, and memory footprint. Carry out an isolated live relay + real daemon end-to-end demonstration, including human reply.
 8. Add operator documentation, version compatibility matrix, NixOS/Linux deployment guidance, migration and rollback.
 
-Until these gates pass, leave this module unconnected to startup, do not introduce a new default dependency, and do not claim feature parity.
+Until these gates pass, leave this module unconnected to startup, keep Buzz crypto work confined to the opt-in adapter path, and do not claim feature parity.

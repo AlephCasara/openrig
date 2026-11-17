@@ -34,6 +34,7 @@ describe("Buzz inbound proof: authenticated sender mapping and durable custody",
   let events: BuzzMessage[];
   let rows: Map<string, QueueItem>;
   let creates: Array<Record<string, unknown>>;
+  let reads: Array<{ channelId: string; since?: number; limit: number }>;
   let opts: BuzzInboundLabOpts;
 
   beforeEach(() => {
@@ -41,11 +42,12 @@ describe("Buzz inbound proof: authenticated sender mapping and durable custody",
     events = [msg()];
     rows = new Map();
     creates = [];
+    reads = [];
     opts = {
       home, channelId, selfPubkey: owner,
       allowedHumans: new Map([[guest, human]]),
       resolveConfirmedRoot: (id) => id === rootId ? { qitemId: "qitem-root-1", recipient: human, seat } : null,
-      transport: { getMessages: async () => events },
+      transport: { getMessages: async (input) => { reads.push(input); return events; } },
       queue: {
         getQitem: (id) => rows.get(id) ?? null,
         createQitem: async (input) => {
@@ -74,6 +76,31 @@ describe("Buzz inbound proof: authenticated sender mapping and durable custody",
     const replay = await new BuzzInboundLab(opts).pollOnce();
     expect(replay).toMatchObject({ ok: true, accepted: 0 });
     expect(creates).toHaveLength(1);
+  });
+
+  it("orders replies stably and replays an overlap so late same-second events are not skipped", async () => {
+    events = [
+      msg({ id: "3".repeat(64), createdAt: 1762800001 }),
+      msg({ id: "2".repeat(64), createdAt: 1762800000 }),
+      msg({ id: "1".repeat(64), createdAt: 1762800000 }),
+    ];
+    expect(await new BuzzInboundLab(opts).pollOnce()).toMatchObject({ ok: true, accepted: 3 });
+    expect(creates.map((item) => item.qitemId)).toEqual([
+      "qitem-buzz-" + "1".repeat(32),
+      "qitem-buzz-" + "2".repeat(32),
+      "qitem-buzz-" + "3".repeat(32),
+    ]);
+    expect(reads[0]).toEqual({ channelId, limit: 100 });
+
+    // Event IDs are unordered at the same Nostr second. A timestamp overlap
+    // plus persistent event-ID dedupe admits a late lower-ID reply safely.
+    events = [...events, msg({ id: "0".repeat(64), createdAt: 1762800001 })];
+    expect(await new BuzzInboundLab(opts).pollOnce()).toMatchObject({ ok: true, accepted: 1 });
+    expect(reads[1]).toEqual({ channelId, since: 1762799701, limit: 100 });
+    const state = JSON.parse(readFileSync(buzzInboundLedgerPath(home), "utf8")) as {
+      cursor?: { createdAt: number; eventId: string };
+    };
+    expect(state.cursor).toEqual({ createdAt: 1762800001, eventId: "3".repeat(64) });
   });
 
   it("drops unauthorized authors, owner echoes and messages without a confirmed thread", async () => {

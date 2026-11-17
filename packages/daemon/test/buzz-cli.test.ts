@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { finalizeEvent } from "nostr-tools/pure";
 import {
   BuzzCliClient,
   makeBuzzCliRunner,
@@ -6,20 +7,33 @@ import {
 } from "../src/domain/gateway/buzz-cli.js";
 
 const channel = "36c6fc48-43ca-4ec3-a850-27b145de9b1e";
-const eventId = "a".repeat(64);
-const author = "b".repeat(64);
-const rootId = "c".repeat(64);
-const post = { accepted: true, event_id: eventId, message: "accepted" };
-
-const event = (overrides: Record<string, unknown> = {}) => ({
-  id: eventId,
-  pubkey: author,
-  kind: 9,
-  content: "Reply",
-  created_at: 1_783_800_000,
+const secretKey = new Uint8Array(32).fill(1);
+const signed = (overrides: Record<string, unknown> = {}) => {
+  const { id: forcedId, pubkey: forcedPubkey, sig: forcedSig, ...fields } = overrides;
+  const event = finalizeEvent({
+    kind: 9,
+    content: "Reply",
+    created_at: 1_783_800_000,
+    tags: [["h", channel], ["e", "c".repeat(64), "", "reply"]],
+    ...fields,
+  }, secretKey);
+  return {
+    ...event,
+    ...(forcedId !== undefined ? { id: forcedId } : {}),
+    ...(forcedPubkey !== undefined ? { pubkey: forcedPubkey } : {}),
+    ...(forcedSig !== undefined ? { sig: forcedSig } : {}),
+  };
+};
+const rootEvent = signed({ content: "Root", tags: [["h", channel]], created_at: 1_783_799_999 });
+const rootId = rootEvent.id;
+const author = rootEvent.pubkey;
+const event = (overrides: Record<string, unknown> = {}) => signed({
   tags: [["h", channel], ["e", rootId, "", "reply"]],
   ...overrides,
 });
+const replyEvent = event();
+const eventId = replyEvent.id;
+const post = { accepted: true, event_id: eventId, message: "accepted" };
 
 describe("Buzz experimental CLI transport boundary", () => {
   it("posts over stdin, not via process argument, and checks relay acceptance", async () => {
@@ -77,10 +91,7 @@ describe("Buzz experimental CLI transport boundary", () => {
     const calls: readonly string[][] = [];
     const runner: BuzzRunner = async (args) => {
       (calls as string[][]).push([...args]);
-      return JSON.stringify([
-        event({ id: rootId, created_at: 1_783_799_999, tags: [["h", channel]] }),
-        event(),
-      ]);
+      return JSON.stringify([rootEvent, replyEvent]);
     };
     const messages = await new BuzzCliClient({ runner }).getMessages({
       channelId: channel, since: 1_783_799_900, limit: 3,
@@ -108,6 +119,12 @@ describe("Buzz experimental CLI transport boundary", () => {
       const client = new BuzzCliClient({ runner: async () => JSON.stringify(payload) });
       await expect(client.getMessages({ channelId: channel })).rejects.toThrow();
     }
+  });
+
+  it("independently rejects a tampered Nostr event signature", async () => {
+    const tampered = { ...replyEvent, content: "forged after signing" };
+    const client = new BuzzCliClient({ runner: async () => JSON.stringify([tampered]) });
+    await expect(client.getMessages({ channelId: channel })).rejects.toThrow(/signature verification/);
   });
 
   it("validates pagination and output types", async () => {

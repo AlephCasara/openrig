@@ -24,7 +24,7 @@ export interface BuzzReplyRoot {
 }
 
 export interface BuzzInboundTransport {
-  getMessages(input: { channelId: string; limit: number }): Promise<BuzzMessage[]>;
+  getMessages(input: { channelId: string; since?: number; limit: number }): Promise<BuzzMessage[]>;
 }
 
 export interface BuzzInboundLabOpts {
@@ -44,11 +44,16 @@ interface InboundEntry {
   state: "received" | "landed";
   qitemId: string;
   fingerprint: string;
+  createdAt?: number;
 }
 interface Ledger {
-  schemaVersion: 1;
+  schemaVersion: 2;
   entries: Record<string, InboundEntry>;
+  /** Seconds, deliberately overlapped on every read because Nostr `since` has 1s precision. */
+  cursor?: { createdAt: number; eventId: string };
 }
+
+const REPLAY_OVERLAP_SECONDS = 300;
 
 export function buzzInboundLedgerPath(home: string): string {
   return join(home, "gateway", "buzz-inbound-ledger.json");
@@ -62,17 +67,26 @@ function readLedger(file: string): Ledger {
   let text: string;
   try { text = readFileSync(file, "utf8"); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: 1, entries: {} };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: 2, entries: {} };
     throw new Error("Buzz inbound ledger cannot be read");
   }
   try {
-    const data = JSON.parse(text) as Ledger;
-    if (data.schemaVersion !== 1 || !data.entries || typeof data.entries !== "object" || Array.isArray(data.entries)) throw new Error();
+    const data = JSON.parse(text) as {
+      schemaVersion: 1 | 2;
+      entries: Record<string, InboundEntry>;
+      cursor?: Ledger["cursor"];
+    };
+    if ((data.schemaVersion !== 1 && data.schemaVersion !== 2)
+      || !data.entries || typeof data.entries !== "object" || Array.isArray(data.entries)) throw new Error();
     for (const [id, entry] of Object.entries(data.entries)) {
       if (!EVENT_ID.test(id) || !entry || !["received", "landed"].includes(entry.state)
-        || !entry.qitemId?.startsWith("qitem-buzz-") || !EVENT_ID.test(entry.fingerprint)) throw new Error();
+        || !entry.qitemId?.startsWith("qitem-buzz-") || !EVENT_ID.test(entry.fingerprint)
+        || (entry.createdAt !== undefined && (!Number.isSafeInteger(entry.createdAt) || entry.createdAt < 0))) throw new Error();
     }
-    return data;
+    const cursor = data.schemaVersion === 2 ? data.cursor : undefined;
+    if (cursor !== undefined && (!cursor || !Number.isSafeInteger(cursor.createdAt) || cursor.createdAt < 0
+      || !EVENT_ID.test(cursor.eventId))) throw new Error();
+    return { schemaVersion: 2, entries: data.entries, ...(cursor ? { cursor } : {}) };
   } catch {
     throw new Error("Buzz inbound ledger corrupt; retry prohibited");
   }
@@ -121,23 +135,32 @@ export class BuzzInboundLab {
     ok: boolean; reason?: string; accepted: number; ignored: number; scanned: number;
   }> {
     const limit = this.opts.limit ?? 100;
-    // No pagination cursor exists yet. A full window cannot prove complete
-    // coverage: refuse the batch instead of falsely claiming no event loss.
-    const messages = await this.opts.transport.getMessages({ channelId: this.opts.channelId, limit });
-    if (messages.length >= limit) {
-      return { ok: false, reason: "buzz-window-saturated", accepted: 0, ignored: 0, scanned: messages.length };
-    }
     mkdirSync(dirname(this.lockFile), { recursive: true, mode: 0o700 });
     let lock: number;
     try { lock = openSync(this.lockFile, "wx", 0o600); }
-    catch { return { ok: false, reason: "buzz-inbound-ledger-locked", accepted: 0, ignored: 0, scanned: messages.length }; }
+    catch { return { ok: false, reason: "buzz-inbound-ledger-locked", accepted: 0, ignored: 0, scanned: 0 }; }
     let accepted = 0;
     let ignored = 0;
     try {
       const ledger = readLedger(this.ledgerFile);
-      for (const ev of messages) {
+      const since = ledger.cursor === undefined
+        ? undefined
+        : Math.max(0, ledger.cursor.createdAt - REPLAY_OVERLAP_SECONDS);
+      const messages = await this.opts.transport.getMessages({
+        channelId: this.opts.channelId,
+        ...(since !== undefined ? { since } : {}),
+        limit,
+      });
+      // --since is only second-resolution and the CLI has no continuation token.
+      // A full page cannot prove complete coverage; do not process or advance it.
+      if (messages.length >= limit) {
+        return { ok: false, reason: "buzz-window-saturated", accepted: 0, ignored: 0, scanned: messages.length };
+      }
+      const ordered = [...messages].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+      for (const ev of ordered) {
         if (!EVENT_ID.test(ev.id) || !EVENT_ID.test(ev.authorPubkey)
           || ev.channelId.toLowerCase() !== this.opts.channelId.toLowerCase()
+          || !Number.isSafeInteger(ev.createdAt) || ev.createdAt < 0
           || typeof ev.content !== "string" || Buffer.byteLength(ev.content, "utf8") > MAX_INBOUND_BODY) {
           throw new Error("invalid Buzz inbound message metadata");
         }
@@ -169,7 +192,7 @@ export class BuzzInboundLab {
         }
         if (receipt?.state === "landed") { ignored++; continue; }
         if (!receipt) {
-          ledger.entries[ev.id] = { state: "received", qitemId: request.qitemId, fingerprint };
+          ledger.entries[ev.id] = { state: "received", qitemId: request.qitemId, fingerprint, createdAt: ev.createdAt };
           writeLedger(this.ledgerFile, ledger);
         }
         const exists = this.opts.queue.getQitem(request.qitemId);
@@ -188,7 +211,13 @@ export class BuzzInboundLab {
         writeLedger(this.ledgerFile, ledger);
         accepted++;
       }
-      return { ok: true, accepted, ignored, scanned: messages.length };
+      const latest = ordered.at(-1);
+      if (latest && (!ledger.cursor || latest.createdAt > ledger.cursor.createdAt
+        || (latest.createdAt === ledger.cursor.createdAt && latest.id.localeCompare(ledger.cursor.eventId) > 0))) {
+        ledger.cursor = { createdAt: latest.createdAt, eventId: latest.id };
+        writeLedger(this.ledgerFile, ledger);
+      }
+      return { ok: true, accepted, ignored, scanned: ordered.length };
     } finally {
       closeSync(lock);
       try { unlinkSync(this.lockFile); } catch { /* Remain fail-closed if lock could not be released. */ }

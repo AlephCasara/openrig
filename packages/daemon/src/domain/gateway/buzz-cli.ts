@@ -2,6 +2,7 @@
 // CLI protocol: https://github.com/block/buzz/tree/main/crates/buzz-cli
 // No Buzz process runs until an operator selects/configures the transport.
 import { spawn } from "node:child_process";
+import { verifyEvent, type Event } from "nostr-tools/pure";
 
 const CHANNEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EVENT_ID = /^[0-9a-f]{64}$/i;
@@ -70,6 +71,17 @@ function eventFromUnknown(raw: unknown, expectedChannel: string): BuzzMessage {
   if (!Number.isSafeInteger(obj.created_at) || (obj.created_at as number) < 0) {
     throw new Error("Buzz event has invalid timestamp");
   }
+  if (typeof obj.sig !== "string" || !/^[0-9a-f]{128}$/i.test(obj.sig)
+    || !Array.isArray(obj.tags)
+    || !obj.tags.every((tag) => Array.isArray(tag) && tag.every((part) => typeof part === "string"))) {
+    throw new Error("Buzz event has invalid signature or tags");
+  }
+  // The CLI is a transport boundary, not the authority for event identity. Recompute
+  // the Nostr event ID and verify its Schnorr signature before using its author key
+  // for registry admission or routing.
+  let signatureValid = false;
+  try { signatureValid = verifyEvent(obj as unknown as Event); } catch { /* malformed cryptographic input */ }
+  if (!signatureValid) throw new Error("Buzz event signature verification failed");
   const tags = tagsOf(obj.tags);
   // The CLI filters by channel; assert that an event actually belongs to it.
   if (!tags.some((t) => t[0] === "h" && t[1]?.toLowerCase() === expectedChannel.toLowerCase())) {

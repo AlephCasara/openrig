@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { finalizeEvent } from "nostr-tools/pure";
 import { BuzzCliClient, makeBuzzCliRunner } from "../src/domain/gateway/buzz-cli.js";
 
 const channelId = "36c6fc48-43ca-4ec3-a850-27b145de9b1e";
 const eventId = "a".repeat(64);
-const pubkey = "b".repeat(64);
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -45,17 +45,18 @@ describe("Buzz executable subprocess boundary (no OpenRig daemon or real relay)"
   });
 
   it("parses a real spawned CLI process output with thread and identity metadata", async () => {
+    const signedEvent = finalizeEvent({
+      kind: 9, content: "hello", created_at: 12,
+      tags: [["h", channelId], ["e", "c".repeat(64), "", "reply"]],
+    }, new Uint8Array(32).fill(2));
     const fixture = makeExecutable(`
-      const args = process.argv.slice(2);
-      const channel = args[args.indexOf("--channel") + 1];
-      const out = [{id:"${eventId}",pubkey:"${pubkey}",kind:9,content:"hello",created_at:12,
-        tags:[["h",channel],["e","${"c".repeat(64)}","","reply"]]}];
+      const out = ${JSON.stringify([signedEvent])};
       process.stdout.write(JSON.stringify(out));
     `);
     const messages = await new BuzzCliClient({ binary: fixture.binary, timeoutMs: 3000 })
       .getMessages({ channelId, since: 10 });
     expect(messages).toEqual([{
-      id: eventId, authorPubkey: pubkey, channelId, content: "hello", createdAt: 12,
+      id: signedEvent.id, authorPubkey: signedEvent.pubkey, channelId, content: "hello", createdAt: 12,
       replyTo: "c".repeat(64),
     }]);
   });
