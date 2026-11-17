@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { DispatchBuffer } from "../src/domain/gateway/dispatch-buffer.js";
 import {
   BuzzOutboundDelivery, prepareBuzzDecision, buzzLedgerPath,
-  resolveConfirmedBuzzRoot,
   type BuzzOutboundTransport, type BuzzOutboundOptions,
 } from "../src/domain/gateway/buzz/outbound-delivery.js";
 import { buildBuzzOutboundLabWire } from "../src/domain/gateway/buzz/outbound-wire-lab.js";
@@ -107,11 +106,6 @@ describe("Buzz outbound queue lab: durable confirmation, no cross-provider repla
     await wait(() => f.sent.length === 1 && new DispatchBuffer(home).pending().length === 0);
     expect(f.sent[0]).toContain("Check acceptance criteria");
     expect(f.sent[0]).toMatch(/\[OpenRig delivery: [a-f0-9]{32}\]/);
-    expect(resolveConfirmedBuzzRoot(home, channelId, eventId)).toEqual({
-      qitemId: "q-1", recipient, seat: "agent@rig",
-    });
-    expect(resolveConfirmedBuzzRoot(home, "11111111-1111-1111-1111-111111111111", eventId)).toBeNull();
-    expect(resolveConfirmedBuzzRoot(home, channelId, "not-an-event-id")).toBeNull();
     expect(wire.status()).toMatchObject({
       productionReady: false, inboundReady: false, confirmed: 1, uncertain: 0,
     });

@@ -226,7 +226,11 @@ export function makeQueuePorts(
     if (!people) return null;
     const channels = (opts.sharedChannels ?? (() => sharedChannelAddresses()))();
     // A person with no connector binding is reached in the Feed and Steering only, so nothing posts for them.
-    const slackPeople = people.filter((person) => person.connectorBindings.length > 0);
+    // Preserve legacy Slack and relay eligibility exactly, including pane-bound
+    // humans with non-primary connectors. Exclude only explicitly Buzz-primary
+    // humans so their queue notifications cannot leak into the Slack wire.
+    const slackPeople = people.filter((person) => person.connectorBindings.length > 0
+      && !person.connectorBindings.some((binding) => binding.role === "primary" && binding.kind === "buzz"));
     const episodes = queueRepo.transitionLog.activeOwnerNotificationEpisodes(includePosted);
     return episodes.flatMap(({ qitemId, transition, posted }) => {
       const row = queueRepo.getById(qitemId);

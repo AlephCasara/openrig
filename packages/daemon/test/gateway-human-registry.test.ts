@@ -84,9 +84,10 @@ describe("A3 human-fragment validation (add-time == load-time)", () => {
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(resolveBuzzHandle(channelId, pubkey.toUpperCase(), [r.fragment])).toEqual({
-        kind: "registered", entityId: "mike", address: "mike@external", connectorRef: channelId, pubkey,
+      expect(resolveBuzzHandle(channelId, pubkey, [r.fragment])).toEqual({
+        kind: "registered", entityId: "mike", address: "mike@external", channelId, pubkey,
       });
+      expect(resolveBuzzHandle(channelId, pubkey.toUpperCase(), [r.fragment]).kind).toBe("unregistered");
       expect(resolveBuzzHandle("11111111-1111-1111-1111-111111111111", pubkey, [r.fragment]).kind)
         .toBe("unregistered");
     }
@@ -354,7 +355,7 @@ describe("A3 proof-5 — fragments -> generated projection; re-project; hand-edi
     expect(okOtherRelay.ok).toBe(true);
   });
 
-  it("refuses one Buzz Nostr pubkey registered to two humans across channels", () => {
+  it("scopes a Buzz Nostr pubkey registration to its channel", () => {
     const pubkey = "b".repeat(64);
     const channel1 = "36c6fc48-43ca-4ec3-a850-27b145de9b1e";
     const channel2 = "11111111-1111-1111-1111-111111111111";
@@ -366,8 +367,7 @@ describe("A3 proof-5 — fragments -> generated projection; re-project; hand-edi
       entityId: "founder", address: "founder@external",
       connectorBindings: [{ kind: "buzz", connectorRef: channel2, secretsRef: "env:BUZZ_PRIVATE_KEY", role: "primary", handle: pubkey }],
     }), home);
-    expect(conflict.ok).toBe(false);
-    if (!conflict.ok) expect(conflict.error).toMatch(/already registered to human "mike"/);
+    expect(conflict.ok).toBe(true);
   });
 });
 

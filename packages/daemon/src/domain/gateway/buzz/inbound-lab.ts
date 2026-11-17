@@ -8,6 +8,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { BuzzMessage } from "../buzz-cli.js";
+import { verifyBuzzNormalizedMessage } from "./verified-history.js";
 import type { InboundQueuePort, QueueItem } from "../slack/queue-access.js";
 
 const EVENT_ID = /^[0-9a-f]{64}$/i;
@@ -24,7 +25,7 @@ export interface BuzzReplyRoot {
 }
 
 export interface BuzzInboundTransport {
-  getMessages(input: { channelId: string; since?: number; limit: number }): Promise<BuzzMessage[]>;
+  getMessages(input: { channelId: string; limit: number; before?: number }): Promise<BuzzMessage[]>;
 }
 
 export interface BuzzInboundLabOpts {
@@ -32,7 +33,11 @@ export interface BuzzInboundLabOpts {
   channelId: string;
   selfPubkey: string;
   /** Maps verified sender pubkey to registered OpenRig human address. */
-  allowedHumans: ReadonlyMap<string, string>;
+  allowedHumans?: ReadonlyMap<string, string>;
+  /** Production-oriented seam: resolve the CURRENT canonical registry at each poll. */
+  resolveHumanPubkey?: (pubkey: string) => string | null;
+  /** Require a valid raw Nostr event, not merely the relay/CLI claimed pubkey. */
+  requireSignedEvents?: boolean;
   /** Must resolve ONLY a confirmed outbound event for this channel. */
   resolveConfirmedRoot: (eventId: string) => BuzzReplyRoot | null;
   queue: Required<Pick<InboundQueuePort, "createQitem" | "getQitem">>;
@@ -44,16 +49,11 @@ interface InboundEntry {
   state: "received" | "landed";
   qitemId: string;
   fingerprint: string;
-  createdAt?: number;
 }
 interface Ledger {
-  schemaVersion: 2;
+  schemaVersion: 1;
   entries: Record<string, InboundEntry>;
-  /** Seconds, deliberately overlapped on every read because Nostr `since` has 1s precision. */
-  cursor?: { createdAt: number; eventId: string };
 }
-
-const REPLAY_OVERLAP_SECONDS = 300;
 
 export function buzzInboundLedgerPath(home: string): string {
   return join(home, "gateway", "buzz-inbound-ledger.json");
@@ -67,26 +67,17 @@ function readLedger(file: string): Ledger {
   let text: string;
   try { text = readFileSync(file, "utf8"); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: 2, entries: {} };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: 1, entries: {} };
     throw new Error("Buzz inbound ledger cannot be read");
   }
   try {
-    const data = JSON.parse(text) as {
-      schemaVersion: 1 | 2;
-      entries: Record<string, InboundEntry>;
-      cursor?: Ledger["cursor"];
-    };
-    if ((data.schemaVersion !== 1 && data.schemaVersion !== 2)
-      || !data.entries || typeof data.entries !== "object" || Array.isArray(data.entries)) throw new Error();
+    const data = JSON.parse(text) as Ledger;
+    if (data.schemaVersion !== 1 || !data.entries || typeof data.entries !== "object" || Array.isArray(data.entries)) throw new Error();
     for (const [id, entry] of Object.entries(data.entries)) {
       if (!EVENT_ID.test(id) || !entry || !["received", "landed"].includes(entry.state)
-        || !entry.qitemId?.startsWith("qitem-buzz-") || !EVENT_ID.test(entry.fingerprint)
-        || (entry.createdAt !== undefined && (!Number.isSafeInteger(entry.createdAt) || entry.createdAt < 0))) throw new Error();
+        || !entry.qitemId?.startsWith("qitem-buzz-") || !EVENT_ID.test(entry.fingerprint)) throw new Error();
     }
-    const cursor = data.schemaVersion === 2 ? data.cursor : undefined;
-    if (cursor !== undefined && (!cursor || !Number.isSafeInteger(cursor.createdAt) || cursor.createdAt < 0
-      || !EVENT_ID.test(cursor.eventId))) throw new Error();
-    return { schemaVersion: 2, entries: data.entries, ...(cursor ? { cursor } : {}) };
+    return data;
   } catch {
     throw new Error("Buzz inbound ledger corrupt; retry prohibited");
   }
@@ -125,6 +116,7 @@ export class BuzzInboundLab {
 
   constructor(private readonly opts: BuzzInboundLabOpts) {
     if (!EVENT_ID.test(opts.selfPubkey)) throw new Error("invalid self pubkey");
+    if (!opts.allowedHumans && !opts.resolveHumanPubkey) throw new Error("Buzz inbound requires a registered-identity resolver");
     if (!Number.isSafeInteger(opts.limit ?? 100) || (opts.limit ?? 100) < 1
       || (opts.limit ?? 100) > MAX_WINDOW) throw new Error("invalid Buzz inbound read window");
     this.ledgerFile = buzzInboundLedgerPath(opts.home);
@@ -135,37 +127,95 @@ export class BuzzInboundLab {
     ok: boolean; reason?: string; accepted: number; ignored: number; scanned: number;
   }> {
     const limit = this.opts.limit ?? 100;
+    // No pagination cursor exists yet. A full window cannot prove complete
+    // coverage: refuse the batch instead of falsely claiming no event loss.
+    const messages = await this.opts.transport.getMessages({ channelId: this.opts.channelId, limit });
+    if (messages.length >= limit) {
+      return { ok: false, reason: "buzz-window-saturated", accepted: 0, ignored: 0, scanned: messages.length };
+    }
+    return this.ingestBatch(messages);
+  }
+
+  /** Accept only an already EXHAUSTIVE composite-cursor history. Every item
+   *  is validated before the first queue write. Caller must establish that
+   *  its history result is complete; incomplete histories cannot be passed.
+   */
+  async ingestVerifiedHistory(messages: BuzzMessage[]): Promise<{
+    ok: boolean; reason?: string; accepted: number; ignored: number; scanned: number;
+  }> {
+    if (!this.opts.requireSignedEvents) throw new Error("Buzz verified-history ingest requires strict verification");
+    return this.ingestBatch(messages);
+  }
+
+  /** A bounded backwards scan of channel history. No cursor or partial ACK is
+   *  written until the entire bounded scan is demonstrably complete.
+   *  The CLI's timestamp-only `--before` cannot resolve >limit same-second
+   *  messages: detect a repeating page and REFUSE rather than dropping events.
+   */
+  async recoverHistory(opts: { maxPages?: number } = {}): Promise<{
+    ok: boolean; reason?: string; accepted: number; ignored: number; scanned: number; pages: number;
+  }> {
+    if (this.opts.requireSignedEvents) {
+      throw new Error("Buzz signed inbound requires authenticated composite-cursor recovery");
+    }
+    const maxPages = opts.maxPages ?? 16;
+    if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 64) throw new Error("invalid Buzz recovery page cap");
+    const limit = this.opts.limit ?? 100;
+    const found = new Map<string, BuzzMessage>();
+    let before: number | undefined;
+    for (let page = 1; page <= maxPages; page++) {
+      const results = await this.opts.transport.getMessages({
+        channelId: this.opts.channelId, limit, ...(before === undefined ? {} : { before }),
+      });
+      if (results.length > limit) throw new Error("Buzz relay returned an oversized recovery batch");
+      for (const event of results) {
+        const prev = found.get(event.id);
+        if (prev && JSON.stringify(prev) !== JSON.stringify(event)) throw new Error("Buzz history replay equivocation");
+        found.set(event.id, event);
+      }
+      if (results.length < limit) {
+        const sorted = [...found.values()].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+        const outcome = await this.ingestBatch(sorted);
+        return { ...outcome, pages: page };
+      }
+      const oldest = Math.min(...results.map((event) => event.createdAt));
+      const nextBefore = oldest + 1; // overlap the boundary second; dedup by Nostr event ID
+      if (!Number.isSafeInteger(nextBefore) || (before !== undefined && nextBefore >= before)) {
+        return { ok: false, reason: "buzz-ambiguous-timestamp-boundary",
+          accepted: 0, ignored: 0, scanned: found.size, pages: page };
+      }
+      before = nextBefore;
+    }
+    return { ok: false, reason: "buzz-recovery-page-limit",
+      accepted: 0, ignored: 0, scanned: found.size, pages: maxPages };
+  }
+
+  private async ingestBatch(messages: BuzzMessage[]): Promise<{
+    ok: boolean; reason?: string; accepted: number; ignored: number; scanned: number;
+  }> {
+    // Pre-validate the complete batch: a malformed or unauthenticated event
+    // at its tail must never lead to partial queue commits.
+    if (this.opts.requireSignedEvents) {
+      for (const ev of messages) verifyBuzzNormalizedMessage(ev, this.opts.channelId);
+    }
     mkdirSync(dirname(this.lockFile), { recursive: true, mode: 0o700 });
     let lock: number;
     try { lock = openSync(this.lockFile, "wx", 0o600); }
-    catch { return { ok: false, reason: "buzz-inbound-ledger-locked", accepted: 0, ignored: 0, scanned: 0 }; }
+    catch { return { ok: false, reason: "buzz-inbound-ledger-locked", accepted: 0, ignored: 0, scanned: messages.length }; }
     let accepted = 0;
     let ignored = 0;
     try {
       const ledger = readLedger(this.ledgerFile);
-      const since = ledger.cursor === undefined
-        ? undefined
-        : Math.max(0, ledger.cursor.createdAt - REPLAY_OVERLAP_SECONDS);
-      const messages = await this.opts.transport.getMessages({
-        channelId: this.opts.channelId,
-        ...(since !== undefined ? { since } : {}),
-        limit,
-      });
-      // --since is only second-resolution and the CLI has no continuation token.
-      // A full page cannot prove complete coverage; do not process or advance it.
-      if (messages.length >= limit) {
-        return { ok: false, reason: "buzz-window-saturated", accepted: 0, ignored: 0, scanned: messages.length };
-      }
-      const ordered = [...messages].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-      for (const ev of ordered) {
+      for (const ev of messages) {
         if (!EVENT_ID.test(ev.id) || !EVENT_ID.test(ev.authorPubkey)
           || ev.channelId.toLowerCase() !== this.opts.channelId.toLowerCase()
-          || !Number.isSafeInteger(ev.createdAt) || ev.createdAt < 0
           || typeof ev.content !== "string" || Buffer.byteLength(ev.content, "utf8") > MAX_INBOUND_BODY) {
           throw new Error("invalid Buzz inbound message metadata");
         }
         if (ev.authorPubkey.toLowerCase() === this.opts.selfPubkey.toLowerCase()) { ignored++; continue; }
-        const human = this.opts.allowedHumans.get(ev.authorPubkey.toLowerCase());
+        const human = this.opts.resolveHumanPubkey
+          ? this.opts.resolveHumanPubkey(ev.authorPubkey.toLowerCase())
+          : this.opts.allowedHumans?.get(ev.authorPubkey.toLowerCase());
         if (!human || !ev.replyTo || !EVENT_ID.test(ev.replyTo)) { ignored++; continue; }
         const root = this.opts.resolveConfirmedRoot(ev.replyTo);
         if (!root || root.recipient !== human || !root.qitemId || !root.seat
@@ -192,7 +242,7 @@ export class BuzzInboundLab {
         }
         if (receipt?.state === "landed") { ignored++; continue; }
         if (!receipt) {
-          ledger.entries[ev.id] = { state: "received", qitemId: request.qitemId, fingerprint, createdAt: ev.createdAt };
+          ledger.entries[ev.id] = { state: "received", qitemId: request.qitemId, fingerprint };
           writeLedger(this.ledgerFile, ledger);
         }
         const exists = this.opts.queue.getQitem(request.qitemId);
@@ -211,13 +261,7 @@ export class BuzzInboundLab {
         writeLedger(this.ledgerFile, ledger);
         accepted++;
       }
-      const latest = ordered.at(-1);
-      if (latest && (!ledger.cursor || latest.createdAt > ledger.cursor.createdAt
-        || (latest.createdAt === ledger.cursor.createdAt && latest.id.localeCompare(ledger.cursor.eventId) > 0))) {
-        ledger.cursor = { createdAt: latest.createdAt, eventId: latest.id };
-        writeLedger(this.ledgerFile, ledger);
-      }
-      return { ok: true, accepted, ignored, scanned: ordered.length };
+      return { ok: true, accepted, ignored, scanned: messages.length };
     } finally {
       closeSync(lock);
       try { unlinkSync(this.lockFile); } catch { /* Remain fail-closed if lock could not be released. */ }
