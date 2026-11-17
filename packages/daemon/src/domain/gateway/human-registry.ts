@@ -24,8 +24,10 @@ import { parseSessionName } from "../session-name.js";
 
 // ── Schema (closed enums; extend only additively behind the contract) ──
 export const HUMAN_ENTITY_CLASSES = new Set(["human"]);          // M1's only class
-export const HUMAN_CONNECTOR_KINDS = new Set(["slack", "relay"]);
-export type HumanConnectorKind = "slack" | "relay";
+export const HUMAN_CONNECTOR_KINDS = new Set(["slack", "relay", "buzz"]);
+export type HumanConnectorKind = "slack" | "relay" | "buzz";
+const BUZZ_CHANNEL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const BUZZ_PUBKEY = /^[0-9a-f]{64}$/i;
 export const HUMAN_BINDING_ROLES = new Set(["primary", "secondary"]);
 export const HUMAN_DELIVERY_CLASSES = new Set(["A", "B", "C", "D"]);
 // entityId is the fragment key + filename: a stable slug that survives platform
@@ -116,12 +118,12 @@ export interface HumanConnectorBinding {
   secretsRef: string;
   /** Per-BINDING routing: EXACTLY ONE primary per entity = the default channel. */
   role: "primary" | "secondary";
-  /** A6 v3: the platform-native id of this human on the connector (e.g. Slack user id).
+  /** A6 v3: the platform-native id of this human on the connector (e.g. Slack user id or
+   *  a Nostr pubkey for Buzz).
    *  OPTIONAL — a handle-less binding is OUTBOUND-ONLY (delivery works; it is NOT
    *  inbound-resolvable, so an inbound event on it fails admission LOUDLY). REQUIRED to be
-   *  inbound-resolvable. UNIQUE per kind (Slack) or per connectorRef (relay) across ALL
-   *  bindings of ALL humans (one platform id = one human; a duplicate is a registration
-   *  conflict, REFUSED). */
+   *  inbound-resolvable. Buzz requires a pubkey handle and UUID channel connectorRef. UNIQUE
+   *  per kind (Slack/Buzz) or per connectorRef (relay) across all humans. */
   handle?: string;
 }
 
@@ -214,6 +216,9 @@ export function validateHumanFragment(raw: unknown): ValidateResult {
     if (typeof b.connectorRef !== "string" || b.connectorRef.length === 0) {
       return { ok: false, error: `connectorBindings[${i}].connectorRef must be a non-empty string` };
     }
+    if (b.kind === "buzz" && !BUZZ_CHANNEL_UUID.test(b.connectorRef)) {
+      return { ok: false, error: `connectorBindings[${i}].connectorRef must be a Buzz channel UUID` };
+    }
     if (typeof b.secretsRef !== "string" || b.secretsRef.length === 0) {
       return { ok: false, error: `connectorBindings[${i}].secretsRef must be a non-empty vault POINTER (never the secret)` };
     }
@@ -227,6 +232,11 @@ export function validateHumanFragment(raw: unknown): ValidateResult {
       if (typeof b.handle !== "string" || !HANDLE_PATTERN.test(b.handle)) {
         return { ok: false, error: `connectorBindings[${i}].handle "${String(b.handle)}" must match ${HANDLE_PATTERN} (a platform id — no ':' '@' or whitespace, which could forge a ref)` };
       }
+      if (b.kind === "buzz" && !BUZZ_PUBKEY.test(b.handle)) {
+        return { ok: false, error: `connectorBindings[${i}].handle must be a 64-character hex Nostr pubkey for Buzz` };
+      }
+    } else if (b.kind === "buzz") {
+      return { ok: false, error: `connectorBindings[${i}].handle must identify the registered Buzz Nostr pubkey` };
     }
     const binding: HumanConnectorBinding = { kind: b.kind as HumanConnectorKind, connectorRef: b.connectorRef, secretsRef: b.secretsRef, role: b.role as "primary" | "secondary" };
     if (b.handle !== undefined) { handle = b.handle as string; binding.handle = handle; }
@@ -420,6 +430,31 @@ export function resolveSlackHandle(
       `--binding ${connectorKind}:<connectorRef>:<secretsRef>:primary:handle=${handle} --delivery-class …; ` +
       `until then this message is REFUSED (it was NOT landed as a fabricated human seat).`,
   };
+}
+
+export type BuzzHandleResolution =
+  | { kind: "registered"; entityId: string; address: string; connectorRef: string; pubkey: string }
+  | { kind: "unregistered"; connectorRef: string; pubkey: string; error: string };
+
+/** Resolve an already signature-verified Nostr pubkey only in its registered Buzz channel. */
+export function resolveBuzzHandle(
+  connectorRef: string,
+  pubkey: string,
+  entities: readonly HumanFragment[],
+): BuzzHandleResolution {
+  if (!BUZZ_CHANNEL_UUID.test(connectorRef) || !BUZZ_PUBKEY.test(pubkey)) {
+    return { kind: "unregistered", connectorRef, pubkey, error: "invalid Buzz channel or pubkey" };
+  }
+  const normalized = pubkey.toLowerCase();
+  for (const entity of entities) {
+    for (const binding of entity.connectorBindings) {
+      if (binding.kind === "buzz" && binding.connectorRef.toLowerCase() === connectorRef.toLowerCase()
+        && binding.handle?.toLowerCase() === normalized) {
+        return { kind: "registered", entityId: entity.entityId, address: entity.address, connectorRef, pubkey: normalized };
+      }
+    }
+  }
+  return { kind: "unregistered", connectorRef, pubkey: normalized, error: "Buzz pubkey is not registered for this channel" };
 }
 
 export type RelayHandleResolution =

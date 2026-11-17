@@ -36,6 +36,9 @@ export interface BuzzDeliveryRecord {
   state: "attempting" | "confirmed";
   channelId: string;
   destination: string;
+  /** Added for confirmed-root reply routing; absent only on legacy lab receipts. */
+  qitemId?: string;
+  seat?: string;
   contentHash: string;
   pubkey: string;
   eventId?: string;
@@ -69,6 +72,8 @@ function validRecord(v: unknown): v is BuzzDeliveryRecord {
   return (v.state === "attempting" || v.state === "confirmed")
     && typeof v.channelId === "string"
     && typeof v.destination === "string"
+    && (v.qitemId === undefined || (typeof v.qitemId === "string" && v.qitemId.length > 0))
+    && (v.seat === undefined || (typeof v.seat === "string" && v.seat.length > 0))
     && typeof v.contentHash === "string" && EVENT_ID.test(v.contentHash)
     && typeof v.pubkey === "string" && OWNER.test(v.pubkey)
     && (v.state === "attempting" ? v.eventId === undefined
@@ -130,9 +135,10 @@ function frozenPayload(decision: OutboundDecision, opts: BuzzOutboundOptions): B
     || decision.entityBindingRef !== p.destinationSession) {
     throw new Error("Buzz destination not explicitly authorized");
   }
-  if (typeof p.qitemId !== "string" || !p.qitemId || typeof p.notificationKey !== "string"
+  if (typeof p.qitemId !== "string" || !p.qitemId || typeof p.sourceSession !== "string" || !p.sourceSession
+    || typeof p.notificationKey !== "string"
     || !p.notificationKey || Buffer.byteLength(p.notificationKey, "utf8") > MAX_KEY_BYTES) {
-    throw new Error("Buzz notification episode is missing a stable key");
+    throw new Error("Buzz notification is missing its queue, seat, or episode identity");
   }
   return p;
 }
@@ -204,12 +210,16 @@ export class BuzzOutboundDelivery {
         state: "attempting",
         channelId: this.opts.channelId,
         destination: p.destinationSession!,
+        qitemId: p.qitemId,
+        seat: p.sourceSession!,
         contentHash: sha256(content),
         pubkey: this.opts.expectedPubkey,
       };
       const prior = ledger.records[key];
       if (prior && (
         prior.channelId !== match.channelId || prior.destination !== match.destination
+        || prior.qitemId !== undefined && prior.qitemId !== match.qitemId
+        || prior.seat !== undefined && prior.seat !== match.seat
         || prior.contentHash !== match.contentHash || prior.pubkey !== match.pubkey
       )) return { ok: false, class: "buzz-notification-changed-after-attempt" };
 
@@ -259,4 +269,21 @@ export class BuzzOutboundDelivery {
       uncertain: entries.filter((r) => r.state === "attempting").length,
     };
   }
+}
+
+/** Resolve a reply root only from a durable, confirmed receipt in the configured channel. */
+export function resolveConfirmedBuzzRoot(
+  home: string,
+  channelId: string,
+  eventId: string,
+): { qitemId: string; recipient: string; seat: string } | null {
+  if (!EVENT_ID.test(eventId)) return null;
+  const matches = Object.values(loadLedger(buzzLedgerPath(home)).records).filter((record) =>
+    record.state === "confirmed"
+    && record.channelId.toLowerCase() === channelId.toLowerCase()
+    && record.eventId?.toLowerCase() === eventId.toLowerCase()
+    && typeof record.qitemId === "string" && typeof record.seat === "string");
+  if (matches.length !== 1) return null;
+  const root = matches[0]!;
+  return { qitemId: root.qitemId!, recipient: root.destination, seat: root.seat! };
 }

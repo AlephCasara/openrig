@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { getPublicKey, generateSecretKey } from "nostr-tools/pure";
 import { BuzzCliClient } from "../packages/daemon/src/domain/gateway/buzz-cli.ts";
 import { BuzzInboundLab } from "../packages/daemon/src/domain/gateway/buzz/inbound-lab.ts";
+import { BuzzOutboundDelivery, prepareBuzzDecision, resolveConfirmedBuzzRoot } from "../packages/daemon/src/domain/gateway/buzz/outbound-delivery.ts";
+import { resolveBuzzHandle, validateHumanFragment } from "../packages/daemon/src/domain/gateway/human-registry.ts";
 
 const binary = process.env.BUZZ_CLI_BIN;
 if (!binary?.startsWith("/")) {
@@ -48,7 +50,11 @@ const server = createServer(async (req, res) => {
       assert.match(body.pubkey, /^[0-9a-f]{64}$/);
       assert.match(body.id, /^[0-9a-f]{64}$/);
       assert.match(body.sig, /^[0-9a-f]{128}$/);
-      assert.ok(["buzz-cli-loopback-smoke", "buzz-cli-loopback-reply"].includes(body.content));
+      assert.ok(
+        body.content === "buzz-cli-loopback-reply"
+        || (body.pubkey === ownerPubkey
+          && body.content.startsWith("Buzz loopback root\n\nbuzz-cli-loopback-smoke\n\n[OpenRig delivery: ")),
+      );
       assert.ok(body.tags.some((tag) => tag[0] === "h" && tag[1] === channelId));
       events.push(body);
       res.end(JSON.stringify({ accepted: true, event_id: body.id, message: "accepted" }));
@@ -88,16 +94,29 @@ try {
   process.env.BUZZ_CONNECT_TIMEOUT_SECS = "2";
 
   const client = new BuzzCliClient({ binary, timeoutMs: 10_000 });
-  const post = await client.sendMessage({
-    channelId,
-    content: "buzz-cli-loopback-smoke",
+  const authorizedDestinations = new Set([human]);
+  const outbound = new BuzzOutboundDelivery({
+    home, channelId, expectedPubkey: ownerPubkey, authorizedDestinations, transport: client,
   });
+  const rootDecision = prepareBuzzDecision({
+    kind: "outbound_decision", decisionId: "loopback-root-decision", op: "post_message",
+    entityBindingRef: human,
+    payload: {
+      qitemId: "qitem-loopback-root", notificationKey: "qitem-loopback-root:episode-1",
+      summary: "Buzz loopback root", body: "buzz-cli-loopback-smoke",
+      destinationSession: human, sourceSession: seat,
+    },
+  }, { channelId, authorizedDestinations });
+  assert.deepEqual(await outbound.deliver(rootDecision), { ok: true });
+  const rootEvent = events.find((event) => event.pubkey === ownerPubkey && event.content.includes("[OpenRig delivery:"));
+  assert.ok(rootEvent);
+  if (!rootEvent) throw new Error("OpenRig Buzz outbound did not produce a confirmed root event");
   process.env.BUZZ_PRIVATE_KEY = guestHex;
   const guestClient = new BuzzCliClient({ binary, timeoutMs: 10_000 });
   const reply = await guestClient.sendMessage({
     channelId,
     content: "buzz-cli-loopback-reply",
-    replyTo: post.eventId,
+    replyTo: rootEvent.id,
   });
   process.env.BUZZ_PRIVATE_KEY = ownerHex;
   const messages = await client.getMessages({
@@ -108,16 +127,30 @@ try {
   if (protocolProblem) throw protocolProblem;
   assert.equal(events.length, 2);
   assert.equal(messages.length, 2);
-  assert.equal(messages.find((message) => message.id === post.eventId)?.content, "buzz-cli-loopback-smoke");
-  assert.equal(messages.find((message) => message.id === reply.eventId)?.replyTo, post.eventId);
+  assert.ok(messages.find((message) => message.id === rootEvent.id)?.content.includes("buzz-cli-loopback-smoke"));
+  assert.equal(messages.find((message) => message.id === reply.eventId)?.replyTo, rootEvent.id);
+  const registration = validateHumanFragment({
+    entityId: "loopback-human",
+    class: "human",
+    displayName: "Loopback Human",
+    address: human,
+    connectorBindings: [{
+      kind: "buzz", connectorRef: channelId,
+      secretsRef: "env:BUZZ_PRIVATE_KEY", role: "primary", handle: guestPubkey,
+    }],
+    prefs: { deliveryClass: "B" },
+  });
+  assert.equal(registration.ok, true);
+  if (!registration.ok) throw new Error(`Loopback Buzz human registration failed: ${registration.error}`);
+  const resolvedHuman = resolveBuzzHandle(channelId, guestPubkey, [registration.fragment]);
+  assert.equal(resolvedHuman.kind, "registered");
+  if (resolvedHuman.kind !== "registered") throw new Error(resolvedHuman.error);
   const rows = new Map();
   const inserted = [];
   const inbound = new BuzzInboundLab({
     home, channelId, selfPubkey: ownerPubkey,
-    allowedHumans: new Map([[guestPubkey, human]]),
-    resolveConfirmedRoot: (eventId) => eventId === post.eventId
-      ? { qitemId: "qitem-loopback-root", recipient: human, seat }
-      : null,
+    allowedHumans: new Map([[resolvedHuman.pubkey, resolvedHuman.address]]),
+    resolveConfirmedRoot: (eventId) => resolveConfirmedBuzzRoot(home, channelId, eventId),
     transport: client,
     queue: {
       getQitem: (id) => rows.get(id) ?? null,

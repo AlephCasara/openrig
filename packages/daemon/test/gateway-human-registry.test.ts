@@ -14,6 +14,7 @@ import {
   humansDir,
   projectionPath,
   OPERATOR_HUMAN_DEFAULT_SLOT,
+  resolveBuzzHandle,
   type HumanFragment,
 } from "../src/domain/gateway/human-registry.js";
 
@@ -71,6 +72,33 @@ describe("A3 human-fragment validation (add-time == load-time)", () => {
     }
   });
 
+  it("accepts a Buzz pubkey binding and resolves it only in the registered channel", () => {
+    const channelId = "36c6fc48-43ca-4ec3-a850-27b145de9b1e";
+    const pubkey = "a".repeat(64);
+    const r = validateHumanFragment({
+      ...fragment(),
+      connectorBindings: [
+        { kind: "slack", connectorRef: "slack-main", secretsRef: "vault://slack/mike", role: "primary" },
+        { kind: "buzz", connectorRef: channelId, secretsRef: "env:BUZZ_PRIVATE_KEY", role: "secondary", handle: pubkey },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(resolveBuzzHandle(channelId, pubkey.toUpperCase(), [r.fragment])).toEqual({
+        kind: "registered", entityId: "mike", address: "mike@external", connectorRef: channelId, pubkey,
+      });
+      expect(resolveBuzzHandle("11111111-1111-1111-1111-111111111111", pubkey, [r.fragment]).kind)
+        .toBe("unregistered");
+    }
+  });
+
+  it("requires a Buzz channel UUID and exact 32-byte hex pubkey handle", () => {
+    const binding = { kind: "buzz", connectorRef: "bad-channel", secretsRef: "env:BUZZ_PRIVATE_KEY", role: "primary", handle: "a".repeat(64) };
+    expect(validateHumanFragment({ ...fragment(), connectorBindings: [binding] }).ok).toBe(false);
+    expect(validateHumanFragment({ ...fragment(), connectorBindings: [{ ...binding, connectorRef: "36c6fc48-43ca-4ec3-a850-27b145de9b1e", handle: "not-a-pubkey" }] }).ok).toBe(false);
+    expect(validateHumanFragment({ ...fragment(), connectorBindings: [{ ...binding, connectorRef: "36c6fc48-43ca-4ec3-a850-27b145de9b1e", handle: undefined }] }).ok).toBe(false);
+  });
+
   it("parseBindingSpec supports relay file:<absolute-env-file> syntax and rejects relative file: paths", () => {
     const ok = parseBindingSpec("relay:bridge-main:file:/etc/openrig/relay.env:primary:handle=mike");
     expect(ok).toEqual({
@@ -85,6 +113,13 @@ describe("A3 human-fragment validation (add-time == load-time)", () => {
     });
     expect(parseBindingSpec("relay:bridge-main:file:relative/relay.env:primary:handle=mike").ok).toBe(false);
     expect(parseBindingSpec("relay:bridge-main:file::primary:handle=mike").ok).toBe(false);
+    expect(parseBindingSpec(`buzz:36c6fc48-43ca-4ec3-a850-27b145de9b1e:env:BUZZ_PRIVATE_KEY:secondary:handle=${"a".repeat(64)}`)).toEqual({
+      ok: true,
+      binding: {
+        kind: "buzz", connectorRef: "36c6fc48-43ca-4ec3-a850-27b145de9b1e",
+        secretsRef: "env:BUZZ_PRIVATE_KEY", role: "secondary", handle: "a".repeat(64),
+      },
+    });
   });
 
   it("parseBindingSpec preserves Slack relative-file backward-compatibility", () => {
@@ -317,6 +352,22 @@ describe("A3 proof-5 — fragments -> generated projection; re-project; hand-edi
       home,
     );
     expect(okOtherRelay.ok).toBe(true);
+  });
+
+  it("refuses one Buzz Nostr pubkey registered to two humans across channels", () => {
+    const pubkey = "b".repeat(64);
+    const channel1 = "36c6fc48-43ca-4ec3-a850-27b145de9b1e";
+    const channel2 = "11111111-1111-1111-1111-111111111111";
+    expect(addHumanFragment(fragment({
+      entityId: "mike", address: "mike@external",
+      connectorBindings: [{ kind: "buzz", connectorRef: channel1, secretsRef: "env:BUZZ_PRIVATE_KEY", role: "primary", handle: pubkey }],
+    }), home).ok).toBe(true);
+    const conflict = addHumanFragment(fragment({
+      entityId: "founder", address: "founder@external",
+      connectorBindings: [{ kind: "buzz", connectorRef: channel2, secretsRef: "env:BUZZ_PRIVATE_KEY", role: "primary", handle: pubkey }],
+    }), home);
+    expect(conflict.ok).toBe(false);
+    if (!conflict.ok) expect(conflict.error).toMatch(/already registered to human "mike"/);
   });
 });
 
