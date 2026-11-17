@@ -2,7 +2,7 @@
 // Run: BUZZ_CLI_BIN=/absolute/path/to/buzz node --import tsx scripts/buzz-gateway-loopback-smoke.mjs
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import { getPublicKey, generateSecretKey, verifyEvent } from "nostr-tools/pure";
 import { buildBuzzGatewayWire } from "../packages/daemon/src/domain/gateway/buzz/buzz-gateway.ts";
 import { BuzzCliClient } from "../packages/daemon/src/domain/gateway/buzz-cli.ts";
 import { addHumanFragment } from "../packages/daemon/src/domain/gateway/human-registry.ts";
+import { buildSelectedGatewayWire, gatewayProviderPath } from "../packages/daemon/src/domain/gateway/provider-selection.ts";
 
 const binary = process.env.BUZZ_CLI_BIN;
 if (!binary?.startsWith("/")) {
@@ -28,7 +29,12 @@ const human = "loopback-human@external";
 const seat = "loopback-agent@rig";
 const events = [];
 const paths = [];
+const logs = [];
 let strongHistoryQueries = 0;
+const strongQueryReturns = [];
+let dropOwnerReceipts = true;
+let ownerReceiptDropped = false;
+let ownerPublishAttempts = 0;
 const home = mkdtempSync(join(tmpdir(), "openrig-buzz-wire-smoke-"));
 const rows = new Map([["qitem-loopback-root", {
   qitemId: "qitem-loopback-root", sourceSession: seat, destinationSession: human,
@@ -57,7 +63,14 @@ const server = createServer(async (req, res) => {
       assert.match(body.sig, /^[0-9a-f]{128}$/);
       assert.ok(verifyEvent(body));
       assert.ok(body.tags.some((tag) => tag[0] === "h" && tag[1] === channelId));
-      events.push(body);
+      if (!events.some((event) => event.id === body.id)) events.push(body);
+      if (body.pubkey === ownerPubkey) ownerPublishAttempts++;
+      if (body.pubkey === ownerPubkey && dropOwnerReceipts) {
+        ownerReceiptDropped = true;
+        // Simulate the relay committing the event while the HTTP response is lost.
+        res.destroy();
+        return;
+      }
       res.end(JSON.stringify({ accepted: true, event_id: body.id, message: "accepted" }));
     } else if (req.method === "POST" && req.url === "/query") {
       const authorization = req.headers.authorization ?? "";
@@ -114,6 +127,11 @@ try {
   delete process.env.BUZZ_FEDERATED_IDENTITY_ADAPTER;
   process.env.BUZZ_TIMEOUT_SECS = "5";
   process.env.BUZZ_CONNECT_TIMEOUT_SECS = "2";
+  writeFileSync(gatewayProviderPath(home), JSON.stringify({
+    schemaVersion: 1,
+    provider: "buzz",
+    buzz: { enabled: true, binaryPath: binary, relayUrl, channelId, credentialSource: "env" },
+  }));
 
   const queueRepo = {
     getById: (id) => rows.get(id) ?? null,
@@ -127,12 +145,19 @@ try {
     },
     transitionLog: { activeOwnerNotificationEpisodes: () => [] },
   };
-  wire = buildBuzzGatewayWire({
+  let selectedProvider = "";
+  wire = buildSelectedGatewayWire({
     home,
-    settings: { enabled: true, binaryPath: binary, relayUrl, channelId, credentialSource: "env" },
-    queueRepo,
-    pollIntervalMs: 1_000,
+    slack: () => { throw new Error("Slack fallback must never run for explicit Buzz selection"); },
+    buzz: (settings) => {
+      selectedProvider = "buzz";
+      return buildBuzzGatewayWire({
+        home, settings, queueRepo, pollIntervalMs: 1_000,
+        log: (message) => logs.push(message),
+      });
+    },
   });
+  assert.equal(selectedProvider, "buzz");
   const dispatched = wire.dispatcher.dispatch("post_message", human, {
     qitemId: "qitem-loopback-root", notificationKey: "qitem-loopback-root:episode-1",
     summary: "Buzz GatewayWire loopback question", body: "Buzz GatewayWire loopback question",
@@ -146,12 +171,31 @@ try {
   const rootEvent = events.find((event) => event.pubkey === ownerPubkey);
   assert.ok(rootEvent);
   if (!rootEvent) throw new Error("GatewayWire did not send its root event");
+  assert.equal(ownerReceiptDropped, true);
+  const sendFailureDeadline = Date.now() + 10_000;
+  while (!logs.some((message) => message.includes("buzz-delivery-outcome-unknown")) && Date.now() < sendFailureDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(logs.some((message) => message.includes("buzz-delivery-outcome-unknown")));
+  assert.equal(wire.status().uncertain, 1);
+  assert.equal(wire.status().confirmed, 0);
+
+  // Starting services replays the retained dispatch. The readback finds the
+  // committed root and confirms it without posting a duplicate.
+  wire.startServices();
+  const reconcileDeadline = Date.now() + 10_000;
+  while (wire.status().confirmed !== 1 && Date.now() < reconcileDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(wire.status().confirmed, 1);
+  assert.equal(wire.status().uncertain, 0);
+  assert.equal(events.filter((event) => event.pubkey === ownerPubkey).length, 1);
+  assert.ok(ownerPublishAttempts >= 1);
 
   process.env.BUZZ_PRIVATE_KEY = guestHex;
   const guest = new BuzzCliClient({ binary, relayUrl, timeoutMs: 10_000 });
   const reply = await guest.sendMessage({ channelId, content: "Buzz GatewayWire loopback reply", replyTo: rootEvent.id });
   process.env.BUZZ_PRIVATE_KEY = ownerHex;
-  wire.startServices();
   const deadline = Date.now() + 10_000;
   while (rows.size < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(rows.size, 2);
@@ -172,7 +216,7 @@ try {
   assert.ok(strongHistoryQueries >= firstPollQueries + 2);
   assert.ok(paths.filter((path) => path === "/query").length >= 3);
   assert.ok(paths.every((path) => path === "/events" || path === "/query"));
-  process.stdout.write("PASS: opt-in Buzz GatewayWire -> real Buzz CLI -> NIP-98-authenticated localhost history -> registered reply routing and restart dedupe.\n");
+  process.stdout.write("PASS: opt-in Buzz GatewayWire -> real Buzz CLI -> lost-response reconciliation without duplicate send -> authenticated registered reply routing and restart dedupe.\n");
 } finally {
   wire?.stop();
   await new Promise((resolve) => server.close(resolve));
