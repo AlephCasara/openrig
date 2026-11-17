@@ -45,6 +45,7 @@ function clearEnv(): () => void {
     // to the REAL ~/.openrig (foreign on-box state) — so tests set a fresh tmp home.
     "OPENRIG_HOME", "RIGGED_HOME",
     "OPENRIG_PORT", "OPENRIG_HOST", "OPENRIG_DB", "OPENRIG_TMUX_SERVER", "OPENRIG_TERMINAL_FIXED_GEOMETRY", "OPENRIG_DAEMON_DB_CONFLICT",
+    "OPENRIG_CONTEXT_MONITOR_INTERVAL_MS", "OPENRIG_HEALTH_DIAGNOSIS_INTERVAL_MS", "OPENRIG_IDENTITY_POLL_INTERVAL_MS",
     "OPENRIG_TRANSCRIPTS_ENABLED", "OPENRIG_TRANSCRIPTS_PATH",
     "OPENRIG_TRANSCRIPTS_LINES", "OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS",
     "OPENRIG_WORKSPACE_ROOT", "OPENRIG_WORKSPACE_SLICES_ROOT",
@@ -122,6 +123,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
   it("VALID_KEYS includes legacy, user-settings, ui.preview, recovery, agents, feed, and transcript-rotation keys", () => {
     const expected = [
       "daemon.port", "daemon.host", "daemon.db_conflict", "daemon.seat_poll_interval_ms",
+      "daemon.context_monitor_interval_ms", "daemon.health_diagnosis_interval_ms", "daemon.identity_poll_interval_ms",
       // OPR.0.4.6.MH1 FR-1/FR-4 — host-selection pointer + own-host name.
       "host.selected",
       "host.name",
@@ -239,6 +241,36 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
     store.set("daemon.db_conflict", "stop");
     expect(store.get("daemon.db_conflict")).toBe("stop");
     expect(() => store.set("daemon.db_conflict", "always")).toThrow(/warn or stop/);
+  });
+
+
+  it("resolves monitor intervals from defaults, config, and environment and rejects faster or unsafe values", () => {
+    const store = new ConfigStore(configPath);
+    expect(store.resolve().daemon).toMatchObject({
+      contextMonitorIntervalMs: 30_000,
+      healthDiagnosisIntervalMs: 60_000,
+      identityPollIntervalMs: 5_000,
+    });
+
+    store.set("daemon.context_monitor_interval_ms", "45000");
+    store.set("daemon.health_diagnosis_interval_ms", "90000");
+    store.set("daemon.identity_poll_interval_ms", "10000");
+    expect(store.resolve().daemon).toMatchObject({
+      contextMonitorIntervalMs: 45_000,
+      healthDiagnosisIntervalMs: 90_000,
+      identityPollIntervalMs: 10_000,
+    });
+
+    process.env.OPENRIG_CONTEXT_MONITOR_INTERVAL_MS = "60000";
+    process.env.OPENRIG_HEALTH_DIAGNOSIS_INTERVAL_MS = "120000";
+    process.env.OPENRIG_IDENTITY_POLL_INTERVAL_MS = "15000";
+    expect(store.get("daemon.context_monitor_interval_ms")).toBe(60_000);
+    expect(store.get("daemon.health_diagnosis_interval_ms")).toBe(120_000);
+    expect(store.get("daemon.identity_poll_interval_ms")).toBe(15_000);
+
+    expect(() => store.set("daemon.context_monitor_interval_ms", "29999")).toThrow(/30000/);
+    expect(() => store.set("daemon.health_diagnosis_interval_ms", "1.5")).toThrow(/60000/);
+    expect(() => store.set("daemon.identity_poll_interval_ms", "2147483648")).toThrow(/2147483647/);
   });
 
   it("defaults stream.intake to queue.worker and validates destinations", () => {

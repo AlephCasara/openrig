@@ -33,7 +33,7 @@ import {
 } from "./middleware/auth-bearer-token.js";
 import type { SlowOperationInstrumentation } from "./domain/slow-op-recorder.js";
 import type { ProviderService } from "./domain/provider/provider-service.js";
-import { SettingsStore } from "./domain/user-settings/settings-store.js";
+import { resolveDaemonTimerIntervalMs, SettingsStore } from "./domain/user-settings/settings-store.js";
 import { startSeatPollers } from "./domain/seat-activity-service.js";
 import {
   ensureOpenRigInstance,
@@ -369,7 +369,7 @@ export async function startServer(port?: number) {
       console.log(`OpenRig daemon listening on http://${host}:${info.port}`);
       if (!monitorsStarted) {
         monitorsStarted = true;
-        contextMonitor.start();
+        contextMonitor.start(resolveDaemonTimerIntervalMs("contextMonitor"));
         // Recovered queue notifications are seat deliveries: they run once listening, never before readiness.
         wakeRecovery.start();
         // PL-004 Phase C: start watchdog scheduler. Joins the supervision
@@ -395,7 +395,7 @@ export async function startServer(port?: number) {
         // OPR.0.4.3.19 — start the liveness identity reconciler (5s default).
         // Persists the per-seat pane PID/command verdict so node-inventory
         // gates the running/active projection on verified process identity.
-        deps.seatIdentityReconciler?.start();
+        deps.seatIdentityReconciler?.start(resolveDaemonTimerIntervalMs("identityPoll"));
         startPeriodicSnapshotScheduler(deps);
         // OPR.0.4.6.FS-1 W2 — boot sweep + daily retention tick (bounded,
         // yields between batches; a sweep failure is logged, never fatal).
@@ -427,7 +427,7 @@ export async function startServer(port?: number) {
   // PL-004 Phase C: graceful shutdown — stop scheduler before process
   // exit so any in-flight policy evaluation completes (or is awaited).
   // Multi-bind: close every serve() instance in parallel.
-  deps.healthDiagnosis?.start();
+  deps.healthDiagnosis?.start(resolveDaemonTimerIntervalMs("healthDiagnosis"));
   const shutdown = createDaemonShutdown({
     receiptPath: path.join(OPENRIG_HOME, DAEMON_SHUTDOWN_RECEIPT),
     phases: [

@@ -138,9 +138,9 @@ describe("config routes (User Settings v0)", () => {
     // + 1 launch.codex_login_shell (defer to Codex's own login-shell setting; default off).
     // + 1 transport.draft_delivery (whether ordinary sends reach a seat whose prompt holds a draft; default deliver).
     // + 1 acp.to (the ACP agent's receiver; default empty).
-    // + 1 daemon.seat_poll_interval_ms (#2687 the seat pollers' cadence; startup-only, default 1000).
+    // + 4 daemon timer intervals (#2687 plus #65; all startup-only).
     // + 1 retention.events_days (the history-only event types of events; default 0 = keep).
-    expect(Object.keys(body.settings).length).toBe(101);
+    expect(Object.keys(body.settings).length).toBe(104);
     expect(body.settings["launch.codex_login_shell"]).toMatchObject({ value: false, source: "default", defaultValue: false });
     expect(body.settings["transport.draft_delivery"]).toMatchObject({ value: "deliver", source: "default", defaultValue: "deliver" });
     expect(body.settings["retention.events_days"]).toMatchObject({ value: 0, source: "default", defaultValue: 0 });

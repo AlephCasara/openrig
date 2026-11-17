@@ -69,6 +69,9 @@ export const SETTINGS_VALID_KEYS = [
   "daemon.db_conflict",
   // #2687: the cadence of the seat-activity and structural-activity pollers; startup-only, read once at daemon start.
   "daemon.seat_poll_interval_ms",
+  "daemon.context_monitor_interval_ms",
+  "daemon.health_diagnosis_interval_ms",
+  "daemon.identity_poll_interval_ms",
   // OPR.0.4.6.MH1 FR-1 — the persisted host-selection pointer, ONE
   // static key, lockstep with cli/src/config-store.ts VALID_KEYS (the
   // twins parity test pins both). Default "local" (unset ≡ local host).
@@ -265,6 +268,9 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "daemon.host": { primary: "OPENRIG_HOST", legacy: "RIGGED_HOST" },
   "daemon.db_conflict": { primary: "OPENRIG_DAEMON_DB_CONFLICT" },
   "daemon.seat_poll_interval_ms": { primary: "OPENRIG_SEAT_POLL_INTERVAL_MS" },
+  "daemon.context_monitor_interval_ms": { primary: "OPENRIG_CONTEXT_MONITOR_INTERVAL_MS" },
+  "daemon.health_diagnosis_interval_ms": { primary: "OPENRIG_HEALTH_DIAGNOSIS_INTERVAL_MS" },
+  "daemon.identity_poll_interval_ms": { primary: "OPENRIG_IDENTITY_POLL_INTERVAL_MS" },
   "db.path": { primary: "OPENRIG_DB", legacy: "RIGGED_DB" },
   "transcripts.enabled": { primary: "OPENRIG_TRANSCRIPTS_ENABLED", legacy: "RIGGED_TRANSCRIPTS_ENABLED" },
   "transcripts.path": { primary: "OPENRIG_TRANSCRIPTS_PATH", legacy: "RIGGED_TRANSCRIPTS_PATH" },
@@ -378,6 +384,9 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "daemon.host": ["daemon", "host"],
   "daemon.db_conflict": ["daemon", "dbConflict"],
   "daemon.seat_poll_interval_ms": ["daemon", "seatPollIntervalMs"],
+  "daemon.context_monitor_interval_ms": ["daemon", "contextMonitorIntervalMs"],
+  "daemon.health_diagnosis_interval_ms": ["daemon", "healthDiagnosisIntervalMs"],
+  "daemon.identity_poll_interval_ms": ["daemon", "identityPollIntervalMs"],
   "db.path": ["db", "path"],
   "transcripts.enabled": ["transcripts", "enabled"],
   "transcripts.path": ["transcripts", "path"],
@@ -678,6 +687,9 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "daemon.host": return "127.0.0.1";
     case "daemon.db_conflict": return "warn";
     case "daemon.seat_poll_interval_ms": return 1000;
+    case "daemon.context_monitor_interval_ms": return 30_000;
+    case "daemon.health_diagnosis_interval_ms": return 60_000;
+    case "daemon.identity_poll_interval_ms": return 5_000;
     case "db.path": return path.join(path.dirname(DEFAULT_CONFIG_PATH), "openrig.sqlite");
     case "transcripts.enabled": return true;
     case "transcripts.path": return path.join(path.dirname(DEFAULT_CONFIG_PATH), "transcripts");
@@ -829,6 +841,16 @@ function positiveIntegerConstraint(key: string) {
   };
 }
 
+
+function daemonTimerIntervalConstraint(key: string, minimum: number) {
+  return (raw: string, value: string | number | boolean): void => {
+    if (!/^[0-9]+$/.test((raw ?? "").trim()) || typeof value !== "number" || !Number.isSafeInteger(value)
+      || value < minimum || value > 2_147_483_647) {
+      throw new Error(`Invalid value for ${key}: must be whole milliseconds in [${minimum}, 2147483647]`);
+    }
+  };
+}
+
 function wakeHumanRungConstraint(raw: string): void {
   if (raw !== "always" && raw !== "explicit-only") {
     throw new Error(`Invalid value for queue.wake_human_rung: must be "always" or "explicit-only", got "${raw}"`);
@@ -847,6 +869,36 @@ function percentageConstraint(key: string) {
   };
 }
 
+export const DAEMON_TIMER_INTERVALS = {
+  contextMonitor: { key: "daemon.context_monitor_interval_ms", defaultMs: 30_000 },
+  healthDiagnosis: { key: "daemon.health_diagnosis_interval_ms", defaultMs: 60_000 },
+  identityPoll: { key: "daemon.identity_poll_interval_ms", defaultMs: 5_000 },
+} as const;
+
+export type DaemonTimerIntervalName = keyof typeof DAEMON_TIMER_INTERVALS;
+
+/** Resolve a startup-only monitor interval, defensively falling back if settings are unreadable or invalid. */
+export function resolveDaemonTimerIntervalMs(
+  name: DaemonTimerIntervalName,
+  read?: () => { value: unknown },
+  warn: (message: string) => void = message => console.warn(message),
+): number {
+  const { key, defaultMs } = DAEMON_TIMER_INTERVALS[name];
+  let setting: { value: unknown };
+  try {
+    setting = (read ?? (() => new SettingsStore().resolveOne(key)))();
+  } catch (error) {
+    warn(`[openrig-settings] ${key} could not be read (${error instanceof Error ? error.message : String(error)}); using ${defaultMs} ms`);
+    return defaultMs;
+  }
+  const value = setting.value;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < defaultMs || value > 2_147_483_647) {
+    warn(`[openrig-settings] ${key}=${JSON.stringify(value)} is not a whole number of milliseconds in ${defaultMs}..2147483647; using ${defaultMs} ms`);
+    return defaultMs;
+  }
+  return value;
+}
+
 const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: string | number | boolean) => void>> = {
   "terminal.tmux_server": (raw) => {
     if (raw !== "inherit" && raw !== "isolated") {
@@ -856,6 +908,9 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
   "daemon.db_conflict": (raw) => {
     if (raw !== "warn" && raw !== "stop") throw new Error("daemon.db_conflict must be warn or stop");
   },
+  "daemon.context_monitor_interval_ms": daemonTimerIntervalConstraint("daemon.context_monitor_interval_ms", 30_000),
+  "daemon.health_diagnosis_interval_ms": daemonTimerIntervalConstraint("daemon.health_diagnosis_interval_ms", 60_000),
+  "daemon.identity_poll_interval_ms": daemonTimerIntervalConstraint("daemon.identity_poll_interval_ms", 5_000),
   "daemon.seat_poll_interval_ms": (raw, value) => {
     // Startup-only: the seat pollers read it once when the daemon starts. Only slower than the 1 s default, up to the
     // ceiling the structural observation's expiry allows (seat-activity-service.ts MAX_SEAT_POLL_INTERVAL_MS).

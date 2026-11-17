@@ -15,7 +15,8 @@ import {
 export interface RiggedConfig {
   specs: { builtinsVisible: boolean };
   launch: { nonInterruptive: boolean; codexLoginShell: boolean };
-  daemon: { port: number; host: string; dbConflict?: "warn" | "stop"; seatPollIntervalMs?: number };
+  daemon: { port: number; host: string; dbConflict?: "warn" | "stop"; seatPollIntervalMs?: number;
+    contextMonitorIntervalMs?: number; healthDiagnosisIntervalMs?: number; identityPollIntervalMs?: number };
   // OPR.0.4.6.MH1 FR-1 — the persisted host-selection pointer.
   // OPR.0.4.6.MH1 FR-4 — the own-host display name (default "localhost").
   host: { selected: string; name: string };
@@ -274,7 +275,8 @@ const DEFAULT_CLAUDE_COMPACTION_EXTRA_INSTRUCTION_FILE_PATH = getDefaultOpenRigP
 
 const DEFAULTS = {
   launch: { nonInterruptive: false, codexLoginShell: false },
-  daemon: { port: 7433, host: "127.0.0.1", dbConflict: "warn", seatPollIntervalMs: 1000 },
+  daemon: { port: 7433, host: "127.0.0.1", dbConflict: "warn", seatPollIntervalMs: 1000,
+    contextMonitorIntervalMs: 30_000, healthDiagnosisIntervalMs: 60_000, identityPollIntervalMs: 5_000 },
   // OPR.0.4.6.MH1 FR-1 — "local" ≡ no remote selection (LOCAL_HOST_ID).
   // FR-4 — own-host display name; default "localhost" (PRD-named).
   host: { selected: "local", name: "localhost" },
@@ -438,6 +440,9 @@ export const VALID_KEYS = [
   "daemon.db_conflict",
   // #2687: the seat pollers' cadence; startup-only (read once when the daemon starts). Twin of the daemon key.
   "daemon.seat_poll_interval_ms",
+  "daemon.context_monitor_interval_ms",
+  "daemon.health_diagnosis_interval_ms",
+  "daemon.identity_poll_interval_ms",
   // OPR.0.4.6.MH1 FR-1 — the persisted host-selection pointer (the
   // kubectl current-context shape). ONE static key, lockstep with the
   // daemon settings-store twin (parity test pins both). Registry-
@@ -600,6 +605,9 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "daemon.host": { primary: "OPENRIG_HOST", legacy: "RIGGED_HOST" },
   "daemon.db_conflict": { primary: "OPENRIG_DAEMON_DB_CONFLICT" },
   "daemon.seat_poll_interval_ms": { primary: "OPENRIG_SEAT_POLL_INTERVAL_MS" },
+  "daemon.context_monitor_interval_ms": { primary: "OPENRIG_CONTEXT_MONITOR_INTERVAL_MS" },
+  "daemon.health_diagnosis_interval_ms": { primary: "OPENRIG_HEALTH_DIAGNOSIS_INTERVAL_MS" },
+  "daemon.identity_poll_interval_ms": { primary: "OPENRIG_IDENTITY_POLL_INTERVAL_MS" },
   "db.path": { primary: "OPENRIG_DB", legacy: "RIGGED_DB" },
   "transcripts.enabled": { primary: "OPENRIG_TRANSCRIPTS_ENABLED", legacy: "RIGGED_TRANSCRIPTS_ENABLED" },
   "transcripts.path": { primary: "OPENRIG_TRANSCRIPTS_PATH", legacy: "RIGGED_TRANSCRIPTS_PATH" },
@@ -715,6 +723,9 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "daemon.host": ["daemon", "host"],
   "daemon.db_conflict": ["daemon", "dbConflict"],
   "daemon.seat_poll_interval_ms": ["daemon", "seatPollIntervalMs"],
+  "daemon.context_monitor_interval_ms": ["daemon", "contextMonitorIntervalMs"],
+  "daemon.health_diagnosis_interval_ms": ["daemon", "healthDiagnosisIntervalMs"],
+  "daemon.identity_poll_interval_ms": ["daemon", "identityPollIntervalMs"],
   "db.path": ["db", "path"],
   "transcripts.enabled": ["transcripts", "enabled"],
   "transcripts.path": ["transcripts", "path"],
@@ -985,6 +996,16 @@ function positiveIntegerConstraint(key: string) {
   };
 }
 
+
+function daemonTimerIntervalConstraint(key: string, minimum: number) {
+  return (raw: string, value: string | number | boolean): void => {
+    if (!/^[0-9]+$/.test((raw ?? "").trim()) || typeof value !== "number" || !Number.isSafeInteger(value)
+      || value < minimum || value > 2_147_483_647) {
+      throw new Error(`Invalid value for ${key}: must be whole milliseconds in [${minimum}, 2147483647]`);
+    }
+  };
+}
+
 function wakeHumanRungConstraint(raw: string): void {
   if (raw !== "always" && raw !== "explicit-only") {
     throw new Error(`Invalid value for queue.wake_human_rung: must be "always" or "explicit-only", got "${raw}"`);
@@ -1012,6 +1033,9 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   "daemon.db_conflict": (raw) => {
     if (raw !== "warn" && raw !== "stop") throw new Error("daemon.db_conflict must be warn or stop");
   },
+  "daemon.context_monitor_interval_ms": daemonTimerIntervalConstraint("daemon.context_monitor_interval_ms", 30_000),
+  "daemon.health_diagnosis_interval_ms": daemonTimerIntervalConstraint("daemon.health_diagnosis_interval_ms", 60_000),
+  "daemon.identity_poll_interval_ms": daemonTimerIntervalConstraint("daemon.identity_poll_interval_ms", 5_000),
   "daemon.seat_poll_interval_ms": (raw, value) => {
     // Startup-only: the seat pollers read it once when the daemon starts. Only slower than the 1 s default, up to the
     // ceiling the structural observation's expiry allows (seat-activity-service.ts MAX_SEAT_POLL_INTERVAL_MS).
@@ -1306,6 +1330,9 @@ export class ConfigStore {
         host: v("daemon.host") as string,
         dbConflict: v("daemon.db_conflict") as "warn" | "stop",
         seatPollIntervalMs: v("daemon.seat_poll_interval_ms") as number,
+        contextMonitorIntervalMs: v("daemon.context_monitor_interval_ms") as number,
+        healthDiagnosisIntervalMs: v("daemon.health_diagnosis_interval_ms") as number,
+        identityPollIntervalMs: v("daemon.identity_poll_interval_ms") as number,
       },
       host: {
         selected: v("host.selected") as string,

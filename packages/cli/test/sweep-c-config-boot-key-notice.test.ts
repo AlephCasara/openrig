@@ -20,7 +20,12 @@ describe("SWEEP-c — boot-only config keys warn while the daemon runs", () => {
   beforeEach(() => { errSpy = vi.spyOn(console, "error").mockImplementation(() => {}); vi.spyOn(console, "log").mockImplementation(() => {}); });
   afterEach(() => vi.restoreAllMocks());
 
-  it.each([["daemon.port", "9999"], ["daemon.db_conflict", "stop"]])("%s with a RUNNING daemon prints the restart-required notice", async (key, value) => {
+  it.each([
+    ["daemon.port", "9999"], ["daemon.db_conflict", "stop"],
+    ["daemon.context_monitor_interval_ms", "45000"],
+    ["daemon.health_diagnosis_interval_ms", "90000"],
+    ["daemon.identity_poll_interval_ms", "10000"],
+  ])("%s with a RUNNING daemon prints the restart-required notice", async (key, value) => {
     await runSet(key, value, true);
     const out = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(out).toMatch(/next daemon restart|restart the daemon/i);

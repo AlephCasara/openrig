@@ -26,11 +26,11 @@ export class HealthDiagnosisService {
   private timer: ReturnType<typeof setInterval> | undefined;
   private lastEvaluation: { at: string; error: string | null; coverage: HealthSourceCoverage[] | null } | null = null;
   status() { return { scheduled: this.timer !== undefined, lastEvaluation: this.lastEvaluation }; }
-  start(): void {
+  start(intervalMs = 60_000): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
       void this.evaluate("system:health", true).then((result) => { this.lastEvaluation = { at: this.now(), error: null, coverage: result.coverage }; }, (error: unknown) => { this.lastEvaluation = { at: this.now(), error: String(error), coverage: null }; });
-    }, 60000);
+    }, intervalMs);
     this.timer.unref();
   }
   async stop(): Promise<void> { clearInterval(this.timer); this.timer = undefined; await this.pending; }

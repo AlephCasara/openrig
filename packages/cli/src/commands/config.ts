@@ -11,7 +11,11 @@ function summarizeSettings(store: ConfigStore): Record<ValidKey, ResolvedSetting
 }
 
 // These settings remain boot-only; capture interval/line settings reload live.
-const BOOT_ONLY_KEYS = ["daemon.port", "daemon.host", "daemon.db_conflict", "daemon.seat_poll_interval_ms", "db.path", "terminal.tmux_server"];
+const BOOT_ONLY_KEYS = [
+  "daemon.port", "daemon.host", "daemon.db_conflict", "daemon.seat_poll_interval_ms",
+  "daemon.context_monitor_interval_ms", "daemon.health_diagnosis_interval_ms", "daemon.identity_poll_interval_ms",
+  "db.path", "terminal.tmux_server",
+];
 const BOOT_ONLY_PREFIXES = ["transcripts.enabled", "transcripts.path"];
 
 function isBootOnlyKey(key: string): boolean {
@@ -55,7 +59,11 @@ Examples:
   rig config init-workspace                  # scaffold a repo-ready project workspace
 
 Keys:
-  daemon.*               port, host, seat_poll_interval_ms (startup-only seat-pollers cadence, 1000–2000; default 1000)
+  daemon.*               port, host, seat_poll_interval_ms (startup-only; 1000–2000 ms, default 1000),
+                         context_monitor_interval_ms (startup-only; >=30000 ms, default 30000),
+                         health_diagnosis_interval_ms (startup-only; >=60000 ms, default 60000),
+                         identity_poll_interval_ms (startup-only; >=5000 ms, default 5000).
+                         Timer values cap at 2147483647 ms; longer intervals delay checks accordingly.
   db.path
   transcripts.*          enabled, path, lines, poll_interval_seconds
                          (lines/poll_interval set scrollback CAPTURE depth + cadence.

@@ -212,3 +212,17 @@ runs over skips the next tick, the Codex working-frame proof expires, and a work
 can briefly read idle. At 2000 ms the remaining 1 s margin is also what a lagging event loop
 uses up. The two settings compose: `OPENRIG_TMUX_CONTROL=1` makes each tmux command cheaper,
 and this one makes there be fewer of them.
+
+Three other daemon timers can be slowed independently on small hosts:
+
+| Setting | Default | What a slower interval delays |
+|---|---:|---|
+| `daemon.context_monitor_interval_ms` | 30000 ms | Context-threshold checks and any actions they trigger |
+| `daemon.health_diagnosis_interval_ms` | 60000 ms | Health diagnosis updates |
+| `daemon.identity_poll_interval_ms` | 5000 ms | The verified running/active verdict in node inventory |
+
+Set a value with `rig config set <key> <milliseconds>` or its matching
+`OPENRIG_*_INTERVAL_MS` environment variable. The environment overrides the saved
+`config.json` value. These settings are read at daemon startup, so changes take
+effect after a daemon restart. Values must be whole milliseconds at or above the
+default, up to 2147483647; invalid values produce a warning and use the default.

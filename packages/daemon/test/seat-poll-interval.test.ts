@@ -7,7 +7,7 @@ import {
   DEFAULT_POLL_INTERVAL_MS, MAX_SEAT_POLL_INTERVAL_MS, MIN_SEAT_POLL_INTERVAL_MS, SeatActivityService,
   SEAT_POLL_INTERVAL_KEY, resolveSeatPollIntervalMs, startSeatPollers,
 } from "../src/domain/seat-activity-service.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { resolveDaemonTimerIntervalMs, SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,6 +77,36 @@ describe("resolveSeatPollIntervalMs (the typed setting daemon.seat_poll_interval
 
   it("keeps two intervals below the structural expiry, the age a working-frame proof can reach", () => {
     expect(2 * MAX_SEAT_POLL_INTERVAL_MS).toBeLessThan(DEFAULT_STRUCTURAL_STALE_MS);
+  });
+
+
+  it.each([
+    ["contextMonitor", "daemon.context_monitor_interval_ms", 30_000],
+    ["healthDiagnosis", "daemon.health_diagnosis_interval_ms", 60_000],
+    ["identityPoll", "daemon.identity_poll_interval_ms", 5_000],
+  ] as const)("%s uses its default, accepts slower polling, and falls back from invalid settings", (name, key, defaultMs) => {
+    const warn = vi.fn();
+    expect(resolveDaemonTimerIntervalMs(name, fixed(defaultMs, "default"), warn)).toBe(defaultMs);
+    expect(resolveDaemonTimerIntervalMs(name, fixed(defaultMs + 1000), warn)).toBe(defaultMs + 1000);
+    expect(warn).not.toHaveBeenCalled();
+
+    for (const value of [defaultMs - 1, 1.5, "30000", 2_147_483_648]) {
+      const invalidWarn = vi.fn();
+      expect(resolveDaemonTimerIntervalMs(name, fixed(value), invalidWarn)).toBe(defaultMs);
+      expect(invalidWarn).toHaveBeenCalledOnce();
+      expect(invalidWarn.mock.calls[0][0]).toContain(key);
+      expect(invalidWarn.mock.calls[0][0]).toContain(`using ${defaultMs} ms`);
+    }
+  });
+
+  it.each([
+    ["contextMonitor", 30_000],
+    ["healthDiagnosis", 60_000],
+    ["identityPoll", 5_000],
+  ] as const)("%s falls back with a warning when settings cannot be read", (name, defaultMs) => {
+    const warn = vi.fn();
+    expect(resolveDaemonTimerIntervalMs(name, () => { throw new Error("bad config.json"); }, warn)).toBe(defaultMs);
+    expect(warn.mock.calls[0][0]).toContain("bad config.json");
   });
 });
 
