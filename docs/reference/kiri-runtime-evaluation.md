@@ -108,13 +108,34 @@ Kiri documents Linux packages as tested on Ubuntu and Fedora, not NixOS. The
 local check proves API reachability on this machine but not a working service
 stack. OpenRig's actual `ComposeServicesAdapter` was also run against that
 temporary context: its context-specific Compose preflight succeeded and its
-status call returned `ok: true` with no containers. Real container creation is
-refused by the engine before OpenRig can verify readiness or teardown. This
-proves the Kiri API and OpenRig status path, not an end-to-end service-backed
-rig. On Linux, Kiri group membership is root-equivalent; evaluating a
-root-managed Kiri service requires an explicitly authorized disposable host.
-The production VPS remains untouched.
+status call returned `ok: true` with no containers. Running containers directly
+on the host was refused because Kiri requires root. No system service or global
+Docker socket was changed. Kiri's Linux group membership is root-equivalent,
+so the test moved into a disposable local VM instead of changing host
+privileges.
 
-Not measured here: idle/peak memory, Compose stack compatibility, or the
-Docker/Kiri comparison. The results table must be filled from a disposable,
-authorized Linux host before recommending Kiri for the VPS workload.
+### OpenRig Compose smoke in a local KVM guest
+
+A Debian 12 VM was created under local KVM with 3 GiB RAM and 2 vCPUs. Kiri
+0.2.1 ran as its root-managed system service. Its Docker API was forwarded from
+the guest to a host-only port bound to `127.0.0.1`; OpenRig used a temporary
+Docker context pointed at that forwarded endpoint. Through the actual
+`ComposeServicesAdapter`, OpenRig successfully:
+
+- checked Compose availability;
+- brought up an Alpine service with a unique Compose project;
+- read status and confirmed the service was running;
+- read service logs; and
+- brought the project down.
+
+The Compose project was removed and the temporary Docker context was deleted.
+The KVM guest is stopped between runs. This proves the Kiri selector and
+OpenRig's managed Compose lifecycle against a real Kiri engine without granting
+the host daemon root or touching the production VPS. The repeatable
+[`kiri-compose-smoke.mjs`](../../scripts/kiri-compose-smoke.mjs) script accepts
+the name of a preconfigured context through `KIRI_DOCKER_CONTEXT`.
+
+Not measured yet: idle/peak memory for a representative Compose stack. The
+same-VM Docker/Kiri comparison is still needed before recommending Kiri for the
+VPS workload; VM memory overhead is excluded from runtime-process RSS and must
+be reported separately from guest-visible memory.
